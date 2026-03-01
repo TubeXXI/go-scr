@@ -1,0 +1,31 @@
+name: Deploy to Ubuntu Server
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v0.1.5
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /var/www/tools/go-xxi-scraper
+
+            git fetch origin
+            git reset --hard origin/main
+
+            # rm -f docker-compose.yml
+            # cp -f docker-compose.prod.yml docker-compose.yml
+
+            # docker-compose -f docker-compose.prod.yml up -d
