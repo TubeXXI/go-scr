@@ -1,0 +1,41 @@
+{
+  "movies": [
+    {
+      "id": "4e2e8e7c-748e-49ce-b10b-fa6e8ac6a738",
+      "title": "The Art of Sarah",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2026/02/film-art-sarah-2026-lk21.jpg",
+      "synopsis": null,
+      "rating": 9.5,
+      "duration": null,
+      "year": 2026,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/art-sarah-2026"
+    },
+    {
+      "id": "2bcd30d8-acc9-4bf5-99ec-475206043924",
+      "title": "Be My Boyfriend",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2025/12/film-be-my-boyfriend-2021-lk21.jpg",
+      "synopsis": null,
+      "rating": 7.2,
+      "duration": null,
+      "year": 2021,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/be-my-boyfriend-2021"
+    }
+  ],
+  "pagination": {
+    "current_page": 1,
+    "total_page": 1,
+    "total_items": 2,
+    "has_next": false,
+    "has_prev": false,
+    "next_page_url": null,
+    "prev_page_url": null
+  }
+}

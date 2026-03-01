@@ -1,0 +1,97 @@
+{
+  "movies": [
+    {
+      "id": "2d5e4f1b-e49c-4c50-9b75-1dbbb2e75a8f",
+      "title": "Your Honor",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2023/02/film-your-honor-2020-lk21-d21.jpg",
+      "synopsis": null,
+      "rating": 7.6,
+      "duration": null,
+      "year": 2020,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/your-honor-2020"
+    },
+    {
+      "id": "d05ac4bf-2c82-490e-bd14-fae921665a7c",
+      "title": "True Detective",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2022/07/film-true-detective-2014-lk21-d21.jpg",
+      "synopsis": null,
+      "rating": 8.9,
+      "duration": null,
+      "year": 2014,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/true-detective-2014"
+    },
+    {
+      "id": "40297259-00e1-432e-a1da-a5b4b1fd6c19",
+      "title": "Arrow",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2022/03/film-arrow-2012-lk21-d21.jpg",
+      "synopsis": null,
+      "rating": 7.5,
+      "duration": null,
+      "year": 2012,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/arrow-2012"
+    },
+    {
+      "id": "dbc0a531-358b-40a2-9ce9-53e389ad9d2c",
+      "title": "Breaking Bad",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2021/11/film-breaking-bad-2008-d21.jpg",
+      "synopsis": null,
+      "rating": 9.5,
+      "duration": null,
+      "year": 2008,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/breaking-bad-2008"
+    },
+    {
+      "id": "b5338c75-67eb-4687-bdee-e1a72f4dba72",
+      "title": "Boys Over Flowers (Hana yori dango)",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2022/05/film-boys-over-flowers-hana-yori-dango-2005-lk21-d21.jpg",
+      "synopsis": null,
+      "rating": 8,
+      "duration": null,
+      "year": 2005,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/boys-over-flowers-hana-yori-dango-2005"
+    },
+    {
+      "id": "1da26fbb-0728-457c-96bf-8fde1484128b",
+      "title": "Twin Peaks",
+      "original_title": null,
+      "thumbnail": "https://poster.lk21.party/wp-content/uploads/2022/10/film-twin-peaks-1990-lk21-d21.jpg",
+      "synopsis": null,
+      "rating": 8.8,
+      "duration": null,
+      "year": 1990,
+      "date_published": null,
+      "label_quality": null,
+      "genre": null,
+      "original_page_url": "https://tv3.nontondrama.my/twin-peaks-1990"
+    }
+  ],
+  "pagination": {
+    "current_page": 1,
+    "total_page": 1,
+    "total_items": 6,
+    "has_next": false,
+    "has_prev": false,
+    "next_page_url": null,
+    "prev_page_url": null
+  }
+}

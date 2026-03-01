@@ -68,3 +68,19 @@ func IsValidPath(path string) bool {
 	_, err := filepath.Abs(path)
 	return err == nil
 }
+
+func ClearAllFilesInDir(dirPath string) error {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			err := os.Remove(filepath.Join(dirPath, entry.Name()))
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

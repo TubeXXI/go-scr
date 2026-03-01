@@ -1,0 +1,12 @@
+{
+  "movies": null,
+  "pagination": {
+    "current_page": 1,
+    "total_page": 1,
+    "total_items": 0,
+    "has_next": false,
+    "has_prev": false,
+    "next_page_url": null,
+    "prev_page_url": null
+  }
+}
