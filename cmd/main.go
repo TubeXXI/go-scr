@@ -681,7 +681,26 @@ func runSeriesScraper(method string) {
 				logger.Logger.Error("Error saving artist data", zap.Error(err))
 			}
 		}
+	case Detail:
+		pathPrompt := &survey.Input{
+			Message: "Enter movies path (e.g., /taxi-driver-mobeomtaeksi-2021):",
+			Default: "/taxi-driver-mobeomtaeksi-2021",
+		}
+		path := ""
+		if err := survey.AskOne(pathPrompt, &path); err != nil {
+			logger.Logger.Fatal("Error getting series path input", zap.Error(err))
+		}
 
+		data, err := client.GetSeriesDetail(path)
+		if err != nil {
+			logger.Logger.Error("Error getting series detail", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("detail_%s.json", strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "-", "_"))
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving series detail", zap.Error(err))
+			}
+		}
 	default:
 		logger.Logger.Info("Method not implemented yet", zap.String("method", method))
 	}

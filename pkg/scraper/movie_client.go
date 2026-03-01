@@ -13,6 +13,7 @@ import (
 	"tubexxi/scraper/pkg/types"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
 	"github.com/gofrs/uuid"
 	"go.uber.org/zap"
@@ -29,7 +30,6 @@ func NewMovieClient() *MovieClient {
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
-
 func (mc *MovieClient) Close() {
 	if mc.ChromeClient != nil {
 		mc.ChromeClient.Close()
@@ -60,7 +60,6 @@ func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 
 	return mc.scrapeHome(doc), nil
 }
-
 func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperResponse {
 	var results []types.HomeScrapperResponse
 
@@ -173,7 +172,6 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 
 	return results
 }
-
 func (mc *MovieClient) scrapeSliderMovies(s *goquery.Selection) []types.Movie {
 	var movies []types.Movie
 
@@ -187,7 +185,6 @@ func (mc *MovieClient) scrapeSliderMovies(s *goquery.Selection) []types.Movie {
 
 	return movies
 }
-
 func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 	movie := &types.Movie{}
 
@@ -290,7 +287,6 @@ func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 
 	return movie
 }
-
 func (mc *MovieClient) parseDuration(durationStr string) int {
 	durationStr = strings.ToLower(durationStr)
 
@@ -316,6 +312,7 @@ func (mc *MovieClient) parseDuration(durationStr string) int {
 	return 0
 }
 
+// Movie List
 func (mc *MovieClient) GetMovieList(pathname string, page int) (*types.MovieListResponse, error) {
 	var url string
 
@@ -351,7 +348,6 @@ func (mc *MovieClient) GetMovieList(pathname string, page int) (*types.MovieList
 
 	return mc.scrapeMovieList(doc), nil
 }
-
 func (mc *MovieClient) scrapeMovieList(doc *goquery.Document) *types.MovieListResponse {
 	response := &types.MovieListResponse{
 		Pagination: types.Pagination{
@@ -381,7 +377,6 @@ func (mc *MovieClient) scrapeMovieList(doc *goquery.Document) *types.MovieListRe
 
 	return response
 }
-
 func (mc *MovieClient) parsePagination(doc *goquery.Document) types.Pagination {
 	pagination := types.Pagination{
 		CurrentPage: 1,
@@ -477,12 +472,13 @@ func (mc *MovieClient) parsePagination(doc *goquery.Document) types.Pagination {
 
 	return pagination
 }
+
+// Movie Details
 func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, error) {
 	var htmlContent string
 	var finalURL string
 
 	cleanPathname := mc.makeCleanPathname(pathname)
-
 	initialURL := fmt.Sprintf("%s%s", MovieBaseURL, cleanPathname)
 
 	if !mc.isValidURL(initialURL) {
@@ -492,56 +488,18 @@ func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, erro
 	fmt.Printf("Scraping movie detail from URL: %s\n", initialURL)
 
 	actions := []chromedp.Action{
-		chromedp.Navigate(finalURL),
-		chromedp.Sleep(3 * time.Second),
+		chromedp.Navigate(initialURL),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			var currentURL string
-			err := chromedp.Run(ctx,
-				chromedp.Evaluate(`window.location.href`, &currentURL),
-			)
-			if err != nil {
-				return fmt.Errorf("failed to get current URL: %w", err)
+			var nodes []*cdp.Node
+			err := chromedp.Nodes("#openNow", &nodes, chromedp.AtLeast(0)).Do(ctx)
+			if err == nil && len(nodes) > 0 {
+				fmt.Println("Safelink terdeteksi, melakukan bypass...")
+				return chromedp.Click("#openNow", chromedp.ByQuery).Do(ctx)
 			}
-
-			if currentURL != initialURL {
-				fmt.Printf("Redirected to: %s\n", currentURL)
-				finalURL = currentURL
-			} else {
-				finalURL = initialURL
-			}
-
-			var pageTitle string
-			chromedp.Title(&pageTitle).Do(ctx)
-
-			if strings.Contains(pageTitle, "Mengalihkan") || strings.Contains(pageTitle, "Redirect") {
-				fmt.Println("Redirect page detected")
-
-				var targetURL string
-				err := chromedp.Run(ctx,
-					chromedp.Evaluate(`document.getElementById('openNow')?.href`, &targetURL),
-				)
-				if err == nil && targetURL != "" && targetURL != "undefined" {
-					fmt.Printf("Target URL: %s\n", targetURL)
-
-					fmt.Println("Waiting for automatic redirect...")
-					chromedp.Sleep(6 * time.Second).Do(ctx)
-
-					chromedp.Evaluate(`window.location.href`, &currentURL).Do(ctx)
-
-					if currentURL == initialURL || strings.Contains(currentURL, pathname) {
-						fmt.Println("Clicking redirect button...")
-						chromedp.Click("#openNow", chromedp.NodeVisible).Do(ctx)
-						chromedp.Sleep(3 * time.Second).Do(ctx)
-						chromedp.Evaluate(`window.location.href`, &currentURL).Do(ctx)
-					}
-
-					finalURL = currentURL
-				}
-			}
-
 			return nil
 		}),
-		chromedp.Sleep(2 * time.Second),
+		chromedp.WaitVisible(`.movie-info`, chromedp.ByQuery),
+		chromedp.Location(&finalURL),
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
@@ -551,11 +509,7 @@ func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, erro
 		return nil, err
 	}
 
-	if finalURL == "" {
-		finalURL = initialURL
-	}
-
-	fmt.Printf("Final URL after processing: %s\n", finalURL)
+	fmt.Printf("Final URL captured: %s\n", finalURL)
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
@@ -566,13 +520,12 @@ func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, erro
 	detail := mc.scrapeMovieDetail(doc, finalURL)
 	detail.SourceUrl = mc.stringPtr(finalURL)
 
-	if mc.isSeriesByFinalURL(finalURL) {
+	if mc.isSeriesByFinalURL(finalURL) || mc.looksLikeSeriesPage(doc) {
 		detail.Type = "series"
 	}
 
 	return detail, nil
 }
-
 func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL string) *types.MovieDetail {
 	detail := &types.MovieDetail{
 		Type: "movie",
@@ -974,34 +927,14 @@ func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL stri
 	return detail
 }
 
-func (mc *MovieClient) looksLikeSeriesPage(doc *goquery.Document) bool {
-	if doc.Find("#season-data").Length() > 0 {
-		return true
-	}
-	if doc.Find("select.season-select").Length() > 0 {
-		return true
-	}
-	episodeCount := 0
-	doc.Find("a[href]").Each(func(i int, a *goquery.Selection) {
-		href, _ := a.Attr("href")
-		if regexp.MustCompile(`(?i)season-\d+-episode-\d+`).MatchString(href) {
-			episodeCount++
-			if episodeCount >= 3 {
-				return
-			}
-		}
-	})
-	return episodeCount >= 3
-}
-
 func (mc *MovieClient) GetLatest(page int) (*types.MovieListResponse, error) {
 	return mc.GetMovieList(MovieBaseURL+"/latest-movies/", page)
 }
-
 func (mc *MovieClient) GetTopRated(page int) (*types.MovieListResponse, error) {
 	return mc.GetMovieList(MovieBaseURL+"/top-rated/", page)
 }
 
+// Movie Search
 func (mc *MovieClient) Search(query string, page int) (*types.MovieListResponse, error) {
 	var url string
 	if page > 1 {
@@ -1274,44 +1207,33 @@ func (mc *MovieClient) getViewAllURL(s *goquery.Selection) *string {
 }
 
 func (mc *MovieClient) makeCleanPathname(pathname string) string {
-	pathname = strings.TrimSpace(pathname)
-
-	pathname = strings.TrimPrefix(pathname, "/")
-
-	pathname = url.PathEscape(pathname)
-
-	if pathname == "" {
-		pathname = "/"
-	} else {
-		pathname = "/" + pathname
-	}
-
-	return pathname
+	re := regexp.MustCompile(`^/+|/+$`)
+	return re.ReplaceAllString(pathname, "")
 }
-func (mc *MovieClient) extractRedirectURL(htmlContent string) string {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
-		return ""
+func (mc *MovieClient) looksLikeSeriesPage(doc *goquery.Document) bool {
+	if doc.Find("#season-data").Length() > 0 {
+		return true
 	}
-
-	if link := doc.Find("#openNow"); link.Length() > 0 {
-		if href, exists := link.Attr("href"); exists {
-			return href
+	if doc.Find("select.season-select").Length() > 0 {
+		return true
+	}
+	episodeCount := 0
+	doc.Find("a[href]").Each(func(i int, a *goquery.Selection) {
+		href, _ := a.Attr("href")
+		if regexp.MustCompile(`(?i)season-\d+-episode-\d+`).MatchString(href) {
+			episodeCount++
+			if episodeCount >= 3 {
+				return
+			}
 		}
-	}
-
-	if link := doc.Find("a.primary"); link.Length() > 0 {
-		if href, exists := link.Attr("href"); exists {
-			return href
-		}
-	}
-
-	return ""
+	})
+	return episodeCount >= 3
 }
 func (mc *MovieClient) isSeriesByFinalURL(url string) bool {
 	seriesPatterns := []string{
 		"nontondrama",
 		"series.",
+		"tv3.",
 		"/drama/",
 		"episode",
 		"season",
@@ -1326,49 +1248,7 @@ func (mc *MovieClient) isSeriesByFinalURL(url string) bool {
 	}
 	return false
 }
-func (mc *MovieClient) handleRedirectPage(ctx context.Context, initialURL string) (string, error) {
-	var finalURL string
-	var htmlContent string
 
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(initialURL),
-		chromedp.Sleep(2*time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	)
-	if err != nil {
-		return initialURL, err
-	}
-
-	targetURL := mc.extractRedirectURL(htmlContent)
-	if targetURL == "" {
-		return initialURL, nil
-	}
-
-	fmt.Printf("Extracted target URL: %s\n", targetURL)
-
-	fmt.Println("Waiting for automatic redirect...")
-	time.Sleep(6 * time.Second)
-
-	chromedp.Evaluate(`window.location.href`, &finalURL).Do(ctx)
-
-	if finalURL == initialURL || strings.Contains(finalURL, "no-tail-tell-2026") {
-		fmt.Println("Automatic redirect failed, clicking button...")
-		err = chromedp.Run(ctx,
-			chromedp.Click("#openNow", chromedp.NodeVisible),
-			chromedp.Sleep(3*time.Second),
-			chromedp.Evaluate(`window.location.href`, &finalURL),
-		)
-		if err != nil {
-			return targetURL, nil
-		}
-	}
-
-	if finalURL != "" {
-		return finalURL, nil
-	}
-
-	return targetURL, nil
-}
 func (mc *MovieClient) isValidURL(urlStr string) bool {
 	if urlStr == "" {
 		return false

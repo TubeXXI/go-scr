@@ -1,8 +1,10 @@
 package scraper
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"tubexxi/scraper/pkg/types"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
 	"github.com/gofrs/uuid"
 	"go.uber.org/zap"
@@ -34,6 +37,7 @@ func (sc *SeriesClient) Close() {
 	}
 }
 
+// GetHome scrapes the home page and returns categories with Key, Value, and ViewAllUrl
 func (sc *SeriesClient) GetHome() ([]types.HomeScrapperResponse, error) {
 	var htmlContent string
 
@@ -59,7 +63,6 @@ func (sc *SeriesClient) GetHome() ([]types.HomeScrapperResponse, error) {
 
 	return sc.scrapeHome(doc), nil
 }
-
 func (sc *SeriesClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperResponse {
 	var results []types.HomeScrapperResponse
 
@@ -167,7 +170,6 @@ func (sc *SeriesClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRe
 
 	return results
 }
-
 func (sc *SeriesClient) scrapeSliderSeries(s *goquery.Selection) []types.Movie {
 	var movies []types.Movie
 
@@ -180,7 +182,6 @@ func (sc *SeriesClient) scrapeSliderSeries(s *goquery.Selection) []types.Movie {
 
 	return movies
 }
-
 func (sc *SeriesClient) scrapeGalleryMovies(s *goquery.Selection) []types.Movie {
 	var movies []types.Movie
 
@@ -193,7 +194,6 @@ func (sc *SeriesClient) scrapeGalleryMovies(s *goquery.Selection) []types.Movie 
 
 	return movies
 }
-
 func (sc *SeriesClient) parseSeriesArticle(article *goquery.Selection) *types.Movie {
 	movie := &types.Movie{}
 
@@ -256,6 +256,7 @@ func (sc *SeriesClient) parseSeriesArticle(article *goquery.Selection) *types.Mo
 	return movie
 }
 
+// Series List
 func (sc *SeriesClient) GetSeriesList(pathname string, page int) (*types.MovieListResponse, error) {
 	var url string
 
@@ -291,7 +292,6 @@ func (sc *SeriesClient) GetSeriesList(pathname string, page int) (*types.MovieLi
 
 	return sc.scrapeSeriesList(doc), nil
 }
-
 func (sc *SeriesClient) scrapeSeriesList(doc *goquery.Document) *types.MovieListResponse {
 	response := &types.MovieListResponse{
 		Pagination: types.Pagination{
@@ -320,7 +320,6 @@ func (sc *SeriesClient) scrapeSeriesList(doc *goquery.Document) *types.MovieList
 
 	return response
 }
-
 func (sc *SeriesClient) parsePagination(doc *goquery.Document) types.Pagination {
 	pagination := types.Pagination{
 		CurrentPage: 1,
@@ -417,12 +416,26 @@ func (sc *SeriesClient) parsePagination(doc *goquery.Document) types.Pagination 
 	return pagination
 }
 
-func (sc *SeriesClient) GetSeriesDetail(url string) (*types.SeriesDetail, error) {
+// Series Details
+func (sc *SeriesClient) GetSeriesDetail(pathname string) (*types.SeriesDetail, error) {
 	var htmlContent string
+	var finalURL string
+
+	cleanPathname := sc.makeCleanPathname(pathname)
+	initialURL := fmt.Sprintf("%s%s", SeriesBaseURL, cleanPathname)
+
+	if !sc.isValidURL(initialURL) {
+		return nil, fmt.Errorf("invalid URL format: %s", initialURL)
+	}
+
+	fmt.Printf("Scraping series detail from URL: %s\n", initialURL)
 
 	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
+		chromedp.Navigate(initialURL),
+		sc.clickIfExist("#openNow", false),
+		sc.clickIfExist(`//a[contains(text(), "KLIK UNTUK MELANJUTKAN")]`, true),
+		chromedp.WaitVisible(`.movie-info`, chromedp.ByQuery),
+		chromedp.Location(&finalURL),
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
@@ -432,24 +445,30 @@ func (sc *SeriesClient) GetSeriesDetail(url string) (*types.SeriesDetail, error)
 		return nil, err
 	}
 
+	fmt.Printf("Final URL captured: %s\n", finalURL)
+
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
 		logger.Logger.Error("Error parsing series detail HTML", zap.Error(err))
 		return nil, err
 	}
 
-	detail := sc.scrapeSeriesDetail(doc, url)
-	detail.SourceUrl = sc.stringPtr(url)
+	detail := sc.scrapeSeriesDetail(doc, finalURL)
+	detail.SourceUrl = sc.stringPtr(finalURL)
+
+	if sc.isMoviesByFinalURL(finalURL) || sc.looksLikeMoviesPage(doc) {
+		detail.Type = "movie"
+	}
 
 	return detail, nil
 }
-
 func (sc *SeriesClient) scrapeSeriesDetail(doc *goquery.Document, originalURL string) *types.SeriesDetail {
 	detail := &types.SeriesDetail{
 		Type: "series",
 	}
 
-	// Title
+	detail.OriginalPageUrl = &originalURL
+
 	titleDiv := doc.Find(".movie-info")
 	if titleDiv.Length() > 0 {
 		h1 := titleDiv.Find("h1")
@@ -704,7 +723,6 @@ func (sc *SeriesClient) parseSeasonList(doc *goquery.Document) []types.SeasonLis
 
 	return seasons
 }
-
 func (sc *SeriesClient) GetEpisode(url string) (*types.SeriesEpisode, error) {
 	var htmlContent string
 
@@ -728,7 +746,6 @@ func (sc *SeriesClient) GetEpisode(url string) (*types.SeriesEpisode, error) {
 
 	return sc.scrapeEpisode(doc), nil
 }
-
 func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisode {
 	episode := &types.SeriesEpisode{}
 
@@ -768,6 +785,7 @@ func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisod
 	return episode
 }
 
+// Series Search
 func (sc *SeriesClient) Search(query string, page int) (*types.MovieListResponse, error) {
 	var url string
 	if page > 1 {
@@ -802,6 +820,7 @@ func (sc *SeriesClient) Search(query string, page int) (*types.MovieListResponse
 	return sc.scrapeSeriesList(doc), nil
 }
 
+// Series Latest
 func (sc *SeriesClient) GetLatest(page int) (*types.MovieListResponse, error) {
 	return sc.GetSeriesList(SeriesBaseURL+"/latest-series/", page)
 }
@@ -915,11 +934,71 @@ func (sc *SeriesClient) getViewAllURL(s *goquery.Selection) *string {
 	return viewAllURL
 }
 
-func (sc *SeriesClient) makeCleanPathname(pathname string) string {
-	if strings.HasPrefix(pathname, "/") {
-		return strings.Replace(pathname, "/", "", 1)
+func (mc *SeriesClient) makeCleanPathname(pathname string) string {
+	re := regexp.MustCompile(`^/+|/+$`)
+	return re.ReplaceAllString(pathname, "")
+}
+func (mc *SeriesClient) looksLikeMoviesPage(doc *goquery.Document) bool {
+	if doc.Find("#player-select option").Length() > 0 {
+		return true
 	}
-	return pathname
+	if doc.Find("#player-list li a").Length() > 0 {
+		return true
+	}
+
+	return false
+}
+func (mc *SeriesClient) isMoviesByFinalURL(url string) bool {
+	seriesPatterns := []string{
+		"lk21official",
+		"tv8.",
+	}
+
+	urlLower := strings.ToLower(url)
+	for _, pattern := range seriesPatterns {
+		if strings.Contains(urlLower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+func (mc *SeriesClient) isValidURL(urlStr string) bool {
+	if urlStr == "" {
+		return false
+	}
+
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+
+	if u.Scheme == "" || u.Host == "" {
+		return false
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+
+	return true
+}
+func (mc *SeriesClient) clickIfExist(selector string, isXpath bool) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		var nodes []*cdp.Node
+		searchType := chromedp.ByQuery
+		if isXpath {
+			searchType = chromedp.BySearch
+		}
+
+		subCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		chromedp.Nodes(selector, &nodes, searchType).Do(subCtx)
+		if len(nodes) > 0 {
+			return chromedp.Click(selector, searchType).Do(ctx)
+		}
+		return nil
+	})
 }
 
 func (sc *SeriesClient) stringPtr(s string) *string {
