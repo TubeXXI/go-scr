@@ -2,10 +2,12 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,7 +17,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -113,7 +115,7 @@ func (sc *SeriesClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRe
 			url := sc.getViewAllURL(s)
 
 			if url != nil && *url != "" {
-				absoluteURL := sc.makeAbsoluteURL(*url)
+				absoluteURL := sc.makeAbsoluteSlugURL(*url)
 				viewAllURL = &absoluteURL
 			}
 
@@ -160,7 +162,7 @@ func (sc *SeriesClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRe
 
 	allLatest := sc.scrapeAllLatestSeries(doc)
 	if len(allLatest) > 0 {
-		latestURL := sc.makeAbsoluteURL("/latest")
+		latestURL := sc.makeAbsoluteSlugURL("/latest")
 		results = append(results, types.HomeScrapperResponse{
 			Key:        "All Latest Series",
 			Value:      allLatest,
@@ -197,60 +199,119 @@ func (sc *SeriesClient) scrapeGalleryMovies(s *goquery.Selection) []types.Movie 
 func (sc *SeriesClient) parseSeriesArticle(article *goquery.Selection) *types.Movie {
 	movie := &types.Movie{}
 
-	// ID
-	id := uuid.Must(uuid.NewV4())
+	id := uuid.New()
 	movie.ID = id
 
-	// Title
 	title := article.Find(".poster-title").Text()
 	if title == "" {
 		title = article.Find(".video-title").Text()
 	}
 	movie.Title = strings.TrimSpace(title)
 
-	// URL
 	var originalPageURL string
 	article.Find("a[itemprop='url']").Each(func(i int, a *goquery.Selection) {
 		if href, ok := a.Attr("href"); ok {
-			originalPageURL = sc.makeAbsoluteURL(href)
+			originalPageURL = sc.makeAbsoluteSlugURL(href)
 		}
 	})
 	if originalPageURL == "" {
 		article.Find("a[href]").Each(func(i int, a *goquery.Selection) {
 			if href, ok := a.Attr("href"); ok && strings.Contains(href, "/series/") {
-				originalPageURL = sc.makeAbsoluteURL(href)
+				originalPageURL = sc.makeAbsoluteSlugURL(href)
 			}
 		})
 	}
 	movie.OriginalPageUrl = &originalPageURL
 
-	// Thumbnail
 	if img, ok := article.Find("img[itemprop='image']").Attr("src"); ok {
 		movie.Thumbnail = sc.stringPtr(sc.makeAbsoluteURL(img))
 	}
+	if movie.Thumbnail == nil {
+		if img, ok := article.Find(".poster img").Attr("src"); ok {
+			movie.Thumbnail = sc.stringPtr(img)
+		}
+	}
 
-	// Year
 	yearStr := article.Find(".year").Text()
+	if yearStr == "" {
+		yearStr = article.Find(".video-year").Text()
+	}
 	if yearStr != "" {
 		if year, err := strconv.Atoi(strings.TrimSpace(yearStr)); err == nil {
 			movie.Year = sc.int32Ptr(int32(year))
 		}
 	}
 
-	// Rating
 	ratingStr := article.Find("[itemprop='ratingValue']").Text()
 	if ratingStr != "" {
 		if rating, err := strconv.ParseFloat(strings.TrimSpace(ratingStr), 64); err == nil {
 			movie.Rating = sc.float64Ptr(rating)
 		}
 	}
+	if movie.Rating == nil {
+		rawRating := strings.TrimSpace(article.Find(".rating").Text())
+		if rawRating != "" {
+			re := regexp.MustCompile(`[0-9.]+`)
+			match := re.FindString(rawRating)
+			if match != "" {
+				if val, err := strconv.ParseFloat(match, 64); err == nil {
+					movie.Rating = sc.float64Ptr(val)
+				}
+			}
+		}
+	}
+
+	durationStr := article.Find(".duration").Text()
+	if durationStr != "" {
+		if duration := sc.parseDuration(durationStr); duration > 0 {
+			movie.Duration = sc.int64Ptr(int64(duration))
+		}
+	}
+	if movie.Duration == nil {
+		if dur := strings.TrimSpace(article.Find(".poster .duration").Text()); dur != "" {
+			parts := strings.Split(dur, ":")
+			if len(parts) == 2 {
+				minutes, _ := strconv.Atoi(parts[0])
+				seconds, _ := strconv.Atoi(parts[1])
+
+				totalMinutes := minutes
+				if seconds >= 30 {
+					totalMinutes++
+				}
+				movie.Duration = sc.int64Ptr(int64(totalMinutes))
+			}
+		}
+	}
 
 	// Quality
 	quality := article.Find(".label").Text()
+	if quality == "" {
+		quality = article.Find(".episode.complete").Text()
+	}
+	quality = strings.ReplaceAll(quality, "strong", "")
 	movie.LabelQuality = sc.stringPtr(strings.TrimSpace(quality))
+	if movie.LabelQuality == nil {
+		episodeSpan := article.Find(".episode")
+		if episodeSpan.Length() > 0 {
+			prefix := ""
+			episodeSpan.Contents().Each(func(i int, s *goquery.Selection) {
+				if goquery.NodeName(s) == "#text" {
+					prefix = strings.TrimSpace(s.Text())
+				}
+			})
+
+			episodeNum := strings.TrimSpace(episodeSpan.Find("strong").Text())
+
+			if prefix != "" && episodeNum != "" {
+				movie.LabelQuality = sc.stringPtr(fmt.Sprintf("%s %s", prefix, episodeNum))
+			} else {
+				movie.LabelQuality = sc.stringPtr(strings.TrimSpace(episodeSpan.Text()))
+			}
+		}
+	}
 
 	// Genre
-	genre := article.Find("[itemprop='genre']").Text()
+	genre := article.Find(".genre").Text()
 	movie.Genre = sc.stringPtr(strings.TrimSpace(genre))
 
 	return movie
@@ -319,6 +380,849 @@ func (sc *SeriesClient) scrapeSeriesList(doc *goquery.Document) *types.MovieList
 	response.Pagination.TotalItems = int64(response.Pagination.TotalPage) * int64(len(response.Movies))
 
 	return response
+}
+
+// Series Details
+func (sc *SeriesClient) GetSeriesDetail(pathname string) (*types.SeriesDetail, error) {
+	var htmlContent string
+	var finalURL string
+
+	cleanPathname := sc.makeCleanPathname(pathname)
+	initialURL := fmt.Sprintf("%s%s", SeriesBaseURL, cleanPathname)
+
+	if !sc.isValidURL(initialURL) {
+		return nil, fmt.Errorf("invalid URL format: %s", initialURL)
+	}
+
+	fmt.Printf("Scraping series detail from URL: %s\n", initialURL)
+
+	actions := []chromedp.Action{
+		chromedp.Navigate(initialURL),
+		sc.clickIfExist(`//a[contains(text(), "KLIK UNTUK MELANJUTKAN")]`, true),
+		chromedp.WaitVisible(`.movie-info`, chromedp.ByQuery),
+		chromedp.Location(&finalURL),
+		chromedp.OuterHTML("html", &htmlContent),
+	}
+
+	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	if err != nil {
+		logger.Logger.Error("Error loading series detail page", zap.Error(err))
+		return nil, err
+	}
+
+	fmt.Printf("Final URL captured: %s\n", finalURL)
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		logger.Logger.Error("Error parsing series detail HTML", zap.Error(err))
+		return nil, err
+	}
+
+	detail := sc.scrapeSeriesDetail(doc, finalURL)
+	detail.ID = uuid.New()
+	detail.SourceUrl = sc.stringPtr(finalURL)
+
+	if sc.isMoviesByFinalURL(finalURL) || sc.looksLikeMoviesPage(doc) {
+		detail.Type = "movie"
+	}
+
+	return detail, nil
+}
+func (sc *SeriesClient) scrapeSeriesDetail(doc *goquery.Document, originalURL string) *types.SeriesDetail {
+	detail := &types.SeriesDetail{
+		Type: "series",
+	}
+
+	detail.OriginalPageUrl = &originalURL
+
+	movieInfo := doc.Find(".movie-info")
+	if movieInfo.Length() > 0 {
+		h1 := movieInfo.Find("h1")
+		if h1.Length() > 0 {
+			rawTitle := h1.Text()
+			rawTitle = strings.ReplaceAll(rawTitle, "Nonton ", "")
+			rawTitle = strings.ReplaceAll(rawTitle, " Sub Indo di Lk21", "")
+			rawTitle = strings.ReplaceAll(rawTitle, " Sub Indo", "")
+			detail.Title = strings.TrimSpace(rawTitle)
+		}
+
+		synopsisDiv := movieInfo.Find(".synopsis")
+		if synopsisDiv.Length() > 0 {
+			if synopsis, ok := synopsisDiv.Attr("data-full"); ok && synopsis != "" {
+				detail.Synopsis = sc.stringPtr(synopsis)
+			} else {
+				detail.Synopsis = sc.stringPtr(strings.TrimSpace(synopsisDiv.Text()))
+			}
+		}
+
+		// var seasonName string
+		// movieInfo.Find(".meta-info p").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		// 	spanText := strings.TrimSpace(s.Find("span").Text())
+		// 	if strings.Contains(spanText, "Terbaru:") || strings.Contains(spanText, "Terbaru") {
+		// 		seasonName = strings.TrimSpace(s.Find("a").Text())
+		// 		return false
+		// 	}
+		// 	return true
+		// })
+
+		// if seasonName != "" {
+		// 	detail.SeasonName = &seasonName
+		// }
+
+		infoTag := movieInfo.Find(".info-tag")
+		if infoTag.Length() > 0 {
+			var status string
+			var rating float64
+			var releaseTimestamp *int64
+
+			spans := infoTag.Find("span")
+			spans.Each(func(i int, span *goquery.Selection) {
+				text := strings.TrimSpace(span.Text())
+
+				if text == "" {
+					return
+				}
+
+				if span.Find("i.fa-star").Length() > 0 {
+					cleanText := strings.TrimSpace(span.Text())
+					re := regexp.MustCompile(`(\d+\.\d+)`)
+					if matches := re.FindStringSubmatch(cleanText); len(matches) > 1 {
+						if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
+							rating = val
+							return
+						}
+					}
+				}
+
+				if strings.Contains(text, "Complete") || strings.Contains(text, "Ongoing") {
+					status = text
+					return
+				}
+
+				datePattern := regexp.MustCompile(`^(\d{1,2})\.(\d{1,2})\.(\d{4})$`)
+				if matches := datePattern.FindStringSubmatch(text); len(matches) == 4 {
+					day, _ := strconv.Atoi(matches[1])
+					month, _ := strconv.Atoi(matches[2])
+					year, _ := strconv.Atoi(matches[3])
+
+					if day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1900 {
+						releaseDate := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+						timestamp := releaseDate.Unix()
+						releaseTimestamp = &timestamp
+						return
+					}
+				}
+			})
+
+			if rating > 0 {
+				detail.Rating = &rating
+			}
+
+			if status != "" {
+				detail.Status = &status
+			}
+			if releaseTimestamp != nil {
+				release := time.Unix(*releaseTimestamp, 0)
+				detail.ReleaseDate = &release
+				detail.DatePublished = &release
+			}
+
+		}
+
+		tagList := movieInfo.Find(".tag-list")
+		if tagList.Length() > 0 {
+			var genres []string
+			var genreObjs []types.Genre
+			var countries []types.CountryMovie
+
+			tagList.Find("a").Each(func(i int, a *goquery.Selection) {
+				href, _ := a.Attr("href")
+				text := strings.TrimSpace(a.Text())
+
+				if strings.Contains(href, "/genre/") {
+					genres = append(genres, text)
+					genreObjs = append(genreObjs, types.Genre{
+						Name:    sc.stringPtr(text),
+						PageUrl: sc.stringPtr(sc.makeAbsoluteSlugURL(href)),
+					})
+				} else if strings.Contains(href, "/country/") {
+					countries = append(countries, types.CountryMovie{
+						Name:    sc.stringPtr(text),
+						PageUrl: sc.stringPtr(sc.makeAbsoluteSlugURL(href)),
+					})
+				}
+			})
+
+			if len(genreObjs) > 0 {
+				detail.Genres = &genreObjs
+			}
+			if len(countries) > 0 {
+				detail.Countries = &countries
+			}
+
+			if len(genres) > 0 {
+				genresStr := strings.Join(genres, ", ")
+				detail.Genre = &genresStr
+			}
+
+		}
+
+		detailDiv := movieInfo.Find(".detail")
+		if detailDiv.Length() > 0 {
+			if img, ok := detailDiv.Find("img[itemprop='image']").Attr("src"); ok {
+				detail.Thumbnail = sc.stringPtr(sc.makeAbsoluteURL(img))
+			}
+
+			detailDiv.Find("p").Each(func(i int, p *goquery.Selection) {
+				text := strings.TrimSpace(p.Text())
+
+				if strings.Contains(text, "Sutradara:") {
+					var directors []types.MoviePerson
+					p.Find("a").Each(func(i int, a *goquery.Selection) {
+						href, _ := a.Attr("href")
+						directors = append(directors, types.MoviePerson{
+							Name:    sc.stringPtr(strings.TrimSpace(a.Text())),
+							PageUrl: sc.stringPtr(sc.makeAbsoluteSlugURL(href)),
+						})
+					})
+					if len(directors) > 0 {
+						detail.Director = &directors
+					}
+				} else if strings.Contains(text, "Bintang Film:") {
+					var stars []types.MoviePerson
+					p.Find("a").Each(func(i int, a *goquery.Selection) {
+						href, _ := a.Attr("href")
+						stars = append(stars, types.MoviePerson{
+							Name:    sc.stringPtr(strings.TrimSpace(a.Text())),
+							PageUrl: sc.stringPtr(sc.makeAbsoluteSlugURL(href)),
+						})
+					})
+					if len(stars) > 0 {
+						detail.MovieStar = &stars
+					}
+				} else if strings.Contains(text, "Votes:") {
+					re := regexp.MustCompile(`Votes:\s*([\d,]+)`)
+					matches := re.FindStringSubmatch(text)
+					if len(matches) > 1 {
+						votesStr := strings.ReplaceAll(matches[1], ",", "")
+						if votes, err := strconv.ParseInt(votesStr, 10, 64); err == nil {
+							detail.Votes = sc.int64Ptr(votes)
+						}
+					}
+				} else if strings.Contains(text, "Status:") {
+					status := strings.ReplaceAll(text, "Status:", "")
+					detail.Status = sc.stringPtr(strings.TrimSpace(status))
+				}
+			})
+		}
+	}
+
+	if iframe, ok := doc.Find(".simple-box iframe").Attr("src"); ok {
+		detail.TrailerUrl = sc.stringPtr(iframe)
+	}
+
+	seasonList, seasonName, _ := sc.parseSeasonList(doc)
+	if len(seasonList) > 0 {
+		detail.SeasonList = &seasonList
+	}
+	if seasonName != nil && *seasonName != "" {
+		detail.SeasonName = seasonName
+	}
+
+	similarMovies := sc.parseSimilarSeries(doc)
+	if len(similarMovies) > 0 {
+		detail.SimilarMovies = &similarMovies
+	}
+
+	return detail
+}
+func (sc *SeriesClient) parseSeasonList(doc *goquery.Document) ([]types.SeasonList, *string, *string) {
+	var seasonList []types.SeasonList
+	var seasonName *string
+	var status *string
+
+	doc.Find("p, div, span").Each(func(i int, s *goquery.Selection) {
+		text := s.Text()
+		if strings.Contains(strings.ToLower(text), "status:") {
+			statusText := strings.TrimSpace(strings.ReplaceAll(text, "Status:", ""))
+			statusText = strings.TrimSpace(strings.ReplaceAll(statusText, "status:", ""))
+			if statusText != "" {
+				status = &statusText
+			}
+		}
+	})
+
+	seasonDataEl := doc.Find("#season-data")
+	if seasonDataEl.Length() > 0 {
+		jsonData := strings.TrimSpace(seasonDataEl.Text())
+		if jsonData != "" {
+			var seasonData map[string]interface{}
+			err := json.Unmarshal([]byte(jsonData), &seasonData)
+			if err == nil {
+				episodesBySeason := make(map[int]map[int]string)
+
+				for seasonKey, epsValue := range seasonData {
+					seasonNum, err := strconv.Atoi(seasonKey)
+					if err != nil {
+						continue
+					}
+
+					eps, ok := epsValue.([]interface{})
+					if !ok {
+						continue
+					}
+
+					episodeMap := make(map[int]string)
+					for _, epValue := range eps {
+						ep, ok := epValue.(map[string]interface{})
+						if !ok {
+							continue
+						}
+
+						var episodeNum int
+						if epNo, ok := ep["episode_no"]; ok {
+							episodeNum, _ = strconv.Atoi(fmt.Sprintf("%v", epNo))
+						} else if epNum, ok := ep["episode"]; ok {
+							episodeNum, _ = strconv.Atoi(fmt.Sprintf("%v", epNum))
+						} else {
+							continue
+						}
+
+						slug, ok := ep["slug"].(string)
+						if !ok || slug == "" {
+							continue
+						}
+
+						url := sc.makeAbsoluteURL("/" + strings.TrimLeft(slug, "/"))
+						episodeMap[episodeNum] = url
+					}
+
+					if len(episodeMap) > 0 {
+						episodesBySeason[seasonNum] = episodeMap
+					}
+				}
+
+				currentSeasonNum := 0
+				watchDataEl := doc.Find("#watch-history-data")
+				if watchDataEl.Length() > 0 {
+					watchDataJson := strings.TrimSpace(watchDataEl.Text())
+					if watchDataJson != "" {
+						var watchData map[string]interface{}
+						err = json.Unmarshal([]byte(watchDataJson), &watchData)
+						if err == nil {
+							if cs, ok := watchData["current_season"]; ok {
+								currentSeasonNum, _ = strconv.Atoi(fmt.Sprintf("%v", cs))
+							}
+						}
+					}
+				}
+
+				if len(episodesBySeason) > 0 {
+					var seasonNums []int
+					maxSeason := 0
+					for seasonNum := range episodesBySeason {
+						seasonNums = append(seasonNums, seasonNum)
+						if seasonNum > maxSeason {
+							maxSeason = seasonNum
+						}
+					}
+					sort.Ints(seasonNums)
+
+					totalSeasons := int32(maxSeason)
+
+					if currentSeasonNum == 0 && len(seasonNums) > 0 {
+						currentSeasonNum = seasonNums[len(seasonNums)-1] // last/max season
+					}
+					seasonNameStr := fmt.Sprintf("Season %d", currentSeasonNum)
+					seasonName = &seasonNameStr
+
+					for _, seasonNum := range seasonNums {
+						episodeMap := episodesBySeason[seasonNum]
+
+						var episodes []types.EpisodeList
+						var episodeNums []int
+						for epNum := range episodeMap {
+							episodeNums = append(episodeNums, epNum)
+						}
+						sort.Ints(episodeNums)
+
+						for _, epNum := range episodeNums {
+							ep := types.EpisodeList{
+								EpisodeNumber: sc.int32Ptr(int32(epNum)),
+								EpisodeUrl:    sc.stringPtr(episodeMap[epNum]),
+							}
+							episodes = append(episodes, ep)
+						}
+
+						season := types.SeasonList{
+							CurrentSeason: sc.int32Ptr(int32(seasonNum)),
+							TotalSeason:   sc.int32Ptr(totalSeasons),
+							EpisodeList:   &episodes,
+						}
+						seasonList = append(seasonList, season)
+					}
+
+					return seasonList, seasonName, status
+				}
+			}
+		}
+	}
+
+	episodesBySeason := make(map[int]map[int]string)
+
+	doc.Find("a[href*='season-'][href*='-episode-']").Each(func(i int, a *goquery.Selection) {
+		href, exists := a.Attr("href")
+		if !exists {
+			return
+		}
+
+		re := regexp.MustCompile(`season-(\d+)-episode-(\d+)`)
+		matches := re.FindStringSubmatch(href)
+		if len(matches) < 3 {
+			return
+		}
+
+		seasonNum, _ := strconv.Atoi(matches[1])
+		episodeNum, _ := strconv.Atoi(matches[2])
+
+		if _, ok := episodesBySeason[seasonNum]; !ok {
+			episodesBySeason[seasonNum] = make(map[int]string)
+		}
+
+		episodesBySeason[seasonNum][episodeNum] = sc.makeAbsoluteURL(href)
+	})
+
+	if len(episodesBySeason) == 0 {
+		currentSeasonNum := 1
+		totalSeasons := 1
+
+		seasonSelect := doc.Find("select.season-select")
+		if seasonSelect.Length() > 0 {
+			options := seasonSelect.Find("option")
+			totalSeasons = options.Length()
+
+			options.EachWithBreak(func(i int, opt *goquery.Selection) bool {
+				if _, exists := opt.Attr("selected"); exists {
+					val, _ := opt.Attr("value")
+					if num, err := strconv.Atoi(val); err == nil {
+						currentSeasonNum = num
+					}
+					seasonNameStr := strings.TrimSpace(opt.Text())
+					if seasonNameStr != "" {
+						seasonName = &seasonNameStr
+					}
+					return false
+				}
+				return true
+			})
+
+			if seasonName == nil && options.Length() > 0 {
+				firstOpt := options.First()
+				val, _ := firstOpt.Attr("value")
+				if num, err := strconv.Atoi(val); err == nil {
+					currentSeasonNum = num
+				}
+				seasonNameStr := strings.TrimSpace(firstOpt.Text())
+				if seasonNameStr != "" {
+					seasonName = &seasonNameStr
+				}
+			}
+		}
+
+		var episodes []types.EpisodeList
+		episodeList := doc.Find("ul.episode-list li a")
+		episodeList.Each(func(i int, a *goquery.Selection) {
+			href, exists := a.Attr("href")
+			if !exists {
+				return
+			}
+
+			epText := strings.TrimSpace(a.Text())
+			epNum, _ := strconv.Atoi(epText)
+
+			if epNum == 0 {
+				re := regexp.MustCompile(`episode-(\d+)`)
+				if matches := re.FindStringSubmatch(href); len(matches) > 1 {
+					epNum, _ = strconv.Atoi(matches[1])
+				}
+			}
+
+			ep := types.EpisodeList{
+				EpisodeNumber: sc.int32Ptr(int32(epNum)),
+				EpisodeUrl:    sc.stringPtr(sc.makeAbsoluteURL(href)),
+			}
+			episodes = append(episodes, ep)
+		})
+
+		if len(episodes) > 0 {
+			seasonList = append(seasonList, types.SeasonList{
+				CurrentSeason: sc.int32Ptr(int32(currentSeasonNum)),
+				TotalSeason:   sc.int32Ptr(int32(totalSeasons)),
+				EpisodeList:   &episodes,
+			})
+		}
+
+		return seasonList, seasonName, status
+	}
+
+	var seasonNums []int
+	maxSeason := 0
+	for seasonNum := range episodesBySeason {
+		seasonNums = append(seasonNums, seasonNum)
+		if seasonNum > maxSeason {
+			maxSeason = seasonNum
+		}
+	}
+	sort.Ints(seasonNums)
+
+	totalSeasons := int32(maxSeason)
+
+	if len(seasonNums) > 0 {
+		seasonNameStr := fmt.Sprintf("Season %d", seasonNums[len(seasonNums)-1])
+		seasonName = &seasonNameStr
+	}
+
+	for _, seasonNum := range seasonNums {
+		episodeMap := episodesBySeason[seasonNum]
+
+		var episodes []types.EpisodeList
+		var episodeNums []int
+		for epNum := range episodeMap {
+			episodeNums = append(episodeNums, epNum)
+		}
+		sort.Ints(episodeNums)
+
+		for _, epNum := range episodeNums {
+			ep := types.EpisodeList{
+				EpisodeNumber: sc.int32Ptr(int32(epNum)),
+				EpisodeUrl:    sc.stringPtr(episodeMap[epNum]),
+			}
+			episodes = append(episodes, ep)
+		}
+
+		season := types.SeasonList{
+			CurrentSeason: sc.int32Ptr(int32(seasonNum)),
+			TotalSeason:   sc.int32Ptr(totalSeasons),
+			EpisodeList:   &episodes,
+		}
+		seasonList = append(seasonList, season)
+	}
+
+	return seasonList, seasonName, status
+}
+func (sc *SeriesClient) GetEpisode(pathname string) (*types.SeriesEpisode, error) {
+	var htmlContent string
+
+	cleanPathname := sc.makeCleanPathname(pathname)
+	initialURL := fmt.Sprintf("%s%s", SeriesBaseURL, cleanPathname)
+
+	actions := []chromedp.Action{
+		chromedp.Navigate(initialURL),
+		chromedp.Sleep(3 * time.Second),
+		chromedp.OuterHTML("html", &htmlContent),
+	}
+
+	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	if err != nil {
+		logger.Logger.Error("Error loading episode page", zap.Error(err))
+		return nil, err
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		logger.Logger.Error("Error parsing episode HTML", zap.Error(err))
+		return nil, err
+	}
+
+	episode := sc.scrapeEpisode(doc)
+	episode.EpisodeUrl = &initialURL
+
+	return episode, nil
+}
+func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisode {
+	episode := &types.SeriesEpisode{}
+
+	var playerURLs []types.PlayerUrl
+	doc.Find("#player-list li a").Each(func(i int, a *goquery.Selection) {
+		href, exists := a.Attr("href")
+		if !exists || href == "" {
+			return
+		}
+
+		serverType, _ := a.Attr("data-server")
+		if serverType == "" {
+			serverType = strings.TrimSpace(a.Text())
+		}
+
+		dataURL, _ := a.Attr("data-url")
+		if dataURL != "" && dataURL != href {
+			href = dataURL
+		}
+
+		playerURL := types.PlayerUrl{
+			URL:  sc.stringPtr(sc.makeAbsoluteURL(href)),
+			Type: sc.stringPtr(strings.ToUpper(serverType)),
+		}
+
+		playerURLs = append(playerURLs, playerURL)
+	})
+	doc.Find("#player-select option").Each(func(i int, option *goquery.Selection) {
+		value, exists := option.Attr("value")
+		if !exists || value == "" {
+			return
+		}
+
+		serverType, _ := option.Attr("data-server")
+		if serverType == "" {
+			text := strings.TrimSpace(option.Text())
+			if strings.HasPrefix(text, "GANTI PLAYER ") {
+				serverType = strings.TrimPrefix(text, "GANTI PLAYER ")
+			} else {
+				serverType = text
+			}
+		}
+
+		exists = false
+		for _, p := range playerURLs {
+			if p.URL != nil && *p.URL == sc.makeAbsoluteURL(value) {
+				exists = true
+				break
+			}
+		}
+
+		if !exists {
+			playerURLs = append(playerURLs, types.PlayerUrl{
+				URL:  sc.stringPtr(sc.makeAbsoluteURL(value)),
+				Type: sc.stringPtr(strings.ToUpper(serverType)),
+			})
+		}
+	})
+
+	if len(playerURLs) > 0 {
+		episode.PlayerUrl = &playerURLs
+	}
+
+	return episode
+}
+
+// Series Search
+func (sc *SeriesClient) Search(query string, page int) (*types.MovieListResponse, error) {
+	var url string
+	if page > 1 {
+		url = fmt.Sprintf("%ssearch?s=%s&page=%d", SeriesBaseURL, query, page)
+	} else {
+		url = fmt.Sprintf("%ssearch?s=%s", SeriesBaseURL, query)
+	}
+
+	fmt.Printf("Scraping search results for query: %s and page: %d\n", query, page)
+	fmt.Printf("Search URL: %s\n", url)
+
+	var htmlContent string
+
+	actions := []chromedp.Action{
+		chromedp.Navigate(url),
+		chromedp.Sleep(3 * time.Second),
+		chromedp.OuterHTML("html", &htmlContent),
+	}
+
+	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	if err != nil {
+		logger.Logger.Error("Error loading search page", zap.Error(err))
+		return nil, err
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		logger.Logger.Error("Error parsing search HTML", zap.Error(err))
+		return nil, err
+	}
+
+	return sc.scrapeSeriesList(doc), nil
+}
+
+// Series Latest
+func (sc *SeriesClient) GetLatest(page int) (*types.MovieListResponse, error) {
+	return sc.GetSeriesList(SeriesBaseURL+"/latest-series/", page)
+}
+
+// Helper functions
+func (sc *SeriesClient) scrapeAllLatestSeries(doc *goquery.Document) []types.Movie {
+	var movies []types.Movie
+
+	headers := []string{"Daftar Lengkap Series Terbaru", "Episode Terbaru", "Latest Series"}
+
+	for _, headerText := range headers {
+		doc.Find("h2").Each(func(i int, h *goquery.Selection) {
+			if strings.TrimSpace(h.Text()) == headerText {
+				headerDiv := h.Parent()
+				if headerDiv.Length() > 0 {
+					gallery := headerDiv.NextFiltered(".gallery-grid")
+					if gallery.Length() > 0 {
+						movies = sc.scrapeGalleryMovies(gallery)
+					}
+				}
+			}
+		})
+		if len(movies) > 0 {
+			break
+		}
+	}
+
+	return movies
+}
+func (sc *SeriesClient) parseSimilarSeries(doc *goquery.Document) []types.Movie {
+	var similarMovies []types.Movie
+
+	doc.Find(".mob-related-series .sliders li.slider").Each(func(i int, li *goquery.Selection) {
+		a := li.Find("a")
+		if a.Length() == 0 {
+			return
+		}
+
+		href, exists := a.Attr("href")
+		if !exists {
+			return
+		}
+		originalPageURL := SeriesBaseURL + sc.makeCleanPathname(href)
+
+		var thumbnail string
+		img := li.Find("img")
+		if img.Length() > 0 {
+			if srcset, exists := img.Attr("srcset"); exists && srcset != "" {
+				parts := strings.Fields(srcset)
+				if len(parts) > 0 {
+					thumbnail = parts[0]
+				}
+			}
+
+			if thumbnail == "" {
+				if src, exists := img.Attr("src"); exists {
+					thumbnail = src
+				}
+			}
+		}
+
+		var title string
+		titleText := strings.TrimSpace(li.Find(".poster-title").Text())
+		if titleText != "" {
+			title = titleText
+		}
+
+		var rating float64
+		rawRating := strings.TrimSpace(li.Find(".rating").Text())
+		re := regexp.MustCompile(`[0-9.]+`)
+		match := re.FindString(rawRating)
+		if match != "" {
+			if val, err := strconv.ParseFloat(match, 64); err == nil {
+				rating = val
+			}
+		}
+
+		var year int32
+		yearText := strings.TrimSpace(li.Find(".year").Text())
+		if yearText != "" {
+			if y, err := strconv.ParseInt(yearText, 10, 32); err == nil {
+				year = int32(y)
+			}
+		}
+
+		if year == 0 {
+			if alt, exists := img.Attr("alt"); exists {
+				re := regexp.MustCompile(`\((\d{4})\)`)
+				if matches := re.FindStringSubmatch(alt); len(matches) > 1 {
+					if y, err := strconv.ParseInt(matches[1], 10, 32); err == nil {
+						year = int32(y)
+					}
+				}
+			}
+		}
+
+		var genre string
+		genreText := strings.TrimSpace(li.Find(".genre").Text())
+		if genreText != "" {
+			genre = genreText
+		}
+
+		var labelQuality string
+		episodeSpan := li.Find(".episode")
+
+		if episodeSpan.Length() > 0 {
+			prefix := ""
+			episodeSpan.Contents().Each(func(i int, s *goquery.Selection) {
+				if goquery.NodeName(s) == "#text" {
+					prefix = strings.TrimSpace(s.Text())
+				}
+			})
+
+			episodeNum := strings.TrimSpace(episodeSpan.Find("strong").Text())
+
+			if prefix != "" && episodeNum != "" {
+				labelQuality = fmt.Sprintf("%s %s", prefix, episodeNum)
+			} else {
+				labelQuality = strings.TrimSpace(episodeSpan.Text())
+			}
+		}
+
+		movie := types.Movie{
+			ID:              uuid.New(),
+			Title:           title,
+			Thumbnail:       sc.stringPtr(sc.makeAbsoluteURL(thumbnail)),
+			Year:            &year,
+			Genre:           &genre,
+			Rating:          &rating,
+			LabelQuality:    &labelQuality,
+			OriginalPageUrl: sc.stringPtr(originalPageURL),
+		}
+
+		if movie.Title != "" {
+			similarMovies = append(similarMovies, movie)
+		}
+	})
+
+	if len(similarMovies) == 0 {
+		doc.Find(".related-content .video-list-wrapper .video-list li").Each(func(i int, li *goquery.Selection) {
+			a := li.Find("a")
+			if a.Length() == 0 {
+				return
+			}
+
+			href, _ := a.Attr("href")
+			img := li.Find("img")
+
+			var thumbnail string
+			if img.Length() > 0 {
+				if src, exists := img.Attr("src"); exists {
+					thumbnail = src
+				}
+			}
+
+			title := strings.TrimSpace(li.Find(".video-title").Text())
+			if title == "" {
+				if alt, exists := img.Attr("alt"); exists {
+					title = alt
+				}
+			}
+
+			var year int32
+			yearText := strings.TrimSpace(li.Find(".video-year").Text())
+			if yearText != "" {
+				if y, err := strconv.ParseInt(yearText, 10, 32); err == nil {
+					year = int32(y)
+				}
+			}
+
+			if title != "" {
+				similarMovies = append(similarMovies, types.Movie{
+					Title:           title,
+					Thumbnail:       sc.stringPtr(sc.makeAbsoluteURL(thumbnail)),
+					Year:            &year,
+					OriginalPageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
+				})
+			}
+		})
+	}
+
+	return similarMovies
 }
 func (sc *SeriesClient) parsePagination(doc *goquery.Document) types.Pagination {
 	pagination := types.Pagination{
@@ -415,470 +1319,30 @@ func (sc *SeriesClient) parsePagination(doc *goquery.Document) types.Pagination 
 
 	return pagination
 }
+func (sc *SeriesClient) parseDuration(durationStr string) int {
+	durationStr = strings.ToLower(durationStr)
 
-// Series Details
-func (sc *SeriesClient) GetSeriesDetail(pathname string) (*types.SeriesDetail, error) {
-	var htmlContent string
-	var finalURL string
-
-	cleanPathname := sc.makeCleanPathname(pathname)
-	initialURL := fmt.Sprintf("%s%s", SeriesBaseURL, cleanPathname)
-
-	if !sc.isValidURL(initialURL) {
-		return nil, fmt.Errorf("invalid URL format: %s", initialURL)
+	re := regexp.MustCompile(`(\d+)h\s*(\d+)m`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 2 {
+		hours, _ := strconv.Atoi(matches[1])
+		minutes, _ := strconv.Atoi(matches[2])
+		return hours*60 + minutes
 	}
 
-	fmt.Printf("Scraping series detail from URL: %s\n", initialURL)
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(initialURL),
-		sc.clickIfExist("#openNow", false),
-		sc.clickIfExist(`//a[contains(text(), "KLIK UNTUK MELANJUTKAN")]`, true),
-		chromedp.WaitVisible(`.movie-info`, chromedp.ByQuery),
-		chromedp.Location(&finalURL),
-		chromedp.OuterHTML("html", &htmlContent),
+	re = regexp.MustCompile(`(\d+)m`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
+		minutes, _ := strconv.Atoi(matches[1])
+		return minutes
 	}
 
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
-	if err != nil {
-		logger.Logger.Error("Error loading series detail page", zap.Error(err))
-		return nil, err
+	re = regexp.MustCompile(`(\d+)\s*menit`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
+		minutes, _ := strconv.Atoi(matches[1])
+		return minutes
 	}
 
-	fmt.Printf("Final URL captured: %s\n", finalURL)
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
-		logger.Logger.Error("Error parsing series detail HTML", zap.Error(err))
-		return nil, err
-	}
-
-	detail := sc.scrapeSeriesDetail(doc, finalURL)
-	detail.SourceUrl = sc.stringPtr(finalURL)
-
-	if sc.isMoviesByFinalURL(finalURL) || sc.looksLikeMoviesPage(doc) {
-		detail.Type = "movie"
-	}
-
-	return detail, nil
+	return 0
 }
-func (sc *SeriesClient) scrapeSeriesDetail(doc *goquery.Document, originalURL string) *types.SeriesDetail {
-	detail := &types.SeriesDetail{
-		Type: "series",
-	}
-
-	detail.OriginalPageUrl = &originalURL
-
-	titleDiv := doc.Find(".movie-info")
-	if titleDiv.Length() > 0 {
-		h1 := titleDiv.Find("h1")
-		if h1.Length() > 0 {
-			rawTitle := h1.Text()
-			rawTitle = strings.ReplaceAll(rawTitle, "Nonton ", "")
-			rawTitle = strings.ReplaceAll(rawTitle, " Sub Indo di Lk21", "")
-			rawTitle = strings.ReplaceAll(rawTitle, " Sub Indo", "")
-			detail.Title = strings.TrimSpace(rawTitle)
-		}
-	}
-
-	// Synopsis
-	synopsisDiv := doc.Find(".synopsis")
-	if synopsisDiv.Length() > 0 {
-		if synopsis, ok := synopsisDiv.Attr("data-full"); ok && synopsis != "" {
-			detail.Synopsis = sc.stringPtr(synopsis)
-		} else {
-			detail.Synopsis = sc.stringPtr(strings.TrimSpace(synopsisDiv.Text()))
-		}
-	}
-
-	// Meta info
-	infoTag := doc.Find(".info-tag")
-	if infoTag.Length() > 0 {
-		spans := infoTag.Find("span")
-		spans.Each(func(i int, span *goquery.Selection) {
-			text := strings.TrimSpace(span.Text())
-			switch i {
-			case 0:
-				if rating, err := strconv.ParseFloat(text, 64); err == nil {
-					detail.Rating = sc.float64Ptr(rating)
-				}
-			case 1:
-				detail.LabelQuality = sc.stringPtr(text)
-			case 3:
-				if duration := sc.parseDuration(text); duration > 0 {
-					detail.Duration = sc.int64Ptr(int64(duration))
-				}
-			}
-		})
-	}
-
-	// Genres & Countries
-	tagList := doc.Find(".tag-list")
-	if tagList.Length() > 0 {
-		var genres []types.Genre
-		var countries []types.CountryMovie
-
-		tagList.Find("a").Each(func(i int, a *goquery.Selection) {
-			href, _ := a.Attr("href")
-			text := strings.TrimSpace(a.Text())
-
-			if strings.Contains(href, "/genre/") {
-				genres = append(genres, types.Genre{
-					Name:    sc.stringPtr(text),
-					PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
-				})
-			} else if strings.Contains(href, "/country/") {
-				countries = append(countries, types.CountryMovie{
-					Name:    sc.stringPtr(text),
-					PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
-				})
-			}
-		})
-
-		if len(genres) > 0 {
-			detail.Genres = &genres
-		}
-		if len(countries) > 0 {
-			detail.Countries = &countries
-		}
-	}
-
-	// Detailed info
-	detailDiv := doc.Find(".detail")
-	if detailDiv.Length() > 0 {
-		if img, ok := detailDiv.Find("img[itemprop='image']").Attr("src"); ok {
-			detail.Thumbnail = sc.stringPtr(sc.makeAbsoluteURL(img))
-		}
-
-		detailDiv.Find("p").Each(func(i int, p *goquery.Selection) {
-			text := strings.TrimSpace(p.Text())
-
-			if strings.Contains(text, "Sutradara:") {
-				var directors []types.MoviePerson
-				p.Find("a").Each(func(i int, a *goquery.Selection) {
-					href, _ := a.Attr("href")
-					directors = append(directors, types.MoviePerson{
-						Name:    sc.stringPtr(strings.TrimSpace(a.Text())),
-						PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
-					})
-				})
-				if len(directors) > 0 {
-					detail.Director = &directors
-				}
-			} else if strings.Contains(text, "Bintang Film:") {
-				var stars []types.MoviePerson
-				p.Find("a").Each(func(i int, a *goquery.Selection) {
-					href, _ := a.Attr("href")
-					stars = append(stars, types.MoviePerson{
-						Name:    sc.stringPtr(strings.TrimSpace(a.Text())),
-						PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
-					})
-				})
-				if len(stars) > 0 {
-					detail.MovieStar = &stars
-				}
-			} else if strings.Contains(text, "Votes:") {
-				re := regexp.MustCompile(`Votes:\s*([\d,]+)`)
-				matches := re.FindStringSubmatch(text)
-				if len(matches) > 1 {
-					votesStr := strings.ReplaceAll(matches[1], ",", "")
-					if votes, err := strconv.ParseInt(votesStr, 10, 64); err == nil {
-						detail.Votes = sc.int64Ptr(votes)
-					}
-				}
-			} else if strings.Contains(text, "Status:") {
-				status := strings.ReplaceAll(text, "Status:", "")
-				detail.Status = sc.stringPtr(strings.TrimSpace(status))
-			}
-		})
-	}
-
-	// Parse season list
-	seasonList := sc.parseSeasonList(doc)
-	if len(seasonList) > 0 {
-		detail.SeasonList = &seasonList
-	}
-
-	// Similar series
-	var similarMovies []types.Movie
-	doc.Find(".similar-movies article, .related-movies article").Each(func(i int, item *goquery.Selection) {
-		movie := sc.parseSeriesArticle(item)
-		if movie.Title != "" {
-			similarMovies = append(similarMovies, *movie)
-		}
-	})
-	if len(similarMovies) > 0 {
-		detail.SimilarMovies = &similarMovies
-	}
-
-	return detail
-}
-
-func (sc *SeriesClient) parseSeasonList(doc *goquery.Document) []types.SeasonList {
-	var seasons []types.SeasonList
-
-	// Try #season-data first
-	seasonData := doc.Find("#season-data")
-	if seasonData.Length() > 0 {
-		seasonData.Find(".season-item, .season").Each(func(i int, s *goquery.Selection) {
-			season := types.SeasonList{}
-
-			// Current season number
-			seasonNum := int32(i + 1)
-			season.CurrentSeason = &seasonNum
-
-			// Total seasons - try to find total
-			totalSeasons := int32(1)
-			allSeasons := doc.Find(".season-item, .season")
-			total := allSeasons.Length()
-			if total > 0 {
-				totalSeasons = int32(total)
-			}
-			season.TotalSeason = &totalSeasons
-
-			// Parse episodes for this season
-			var episodes []types.EpisodeList
-			s.Find("a[href*='episode']").Each(func(j int, a *goquery.Selection) {
-				href, _ := a.Attr("href")
-				text := strings.TrimSpace(a.Text())
-
-				epNum := int32(j + 1)
-				ep := types.EpisodeList{
-					EpisodeNumber: &epNum,
-					EpisodeUrl:    sc.stringPtr(sc.makeAbsoluteURL(href)),
-				}
-				_ = text
-				episodes = append(episodes, ep)
-			})
-
-			if len(episodes) > 0 {
-				season.EpisodeList = &episodes
-			}
-
-			seasons = append(seasons, season)
-		})
-	}
-
-	// Try season-select dropdown
-	seasonSelect := doc.Find("select.season-select")
-	if seasonSelect.Length() > 0 && len(seasons) == 0 {
-		options := seasonSelect.Find("option")
-		total := options.Length()
-
-		options.Each(func(i int, opt *goquery.Selection) {
-			season := types.SeasonList{}
-			seasonNum := int32(i + 1)
-			season.CurrentSeason = &seasonNum
-			totalSeasons := int32(total)
-			season.TotalSeason = &totalSeasons
-
-			seasons = append(seasons, season)
-		})
-	}
-
-	// Try episodes section with season-X-episode-Y links
-	if len(seasons) == 0 {
-		episodeLinks := doc.Find("a[href*='season-'][href*='-episode-']")
-		if episodeLinks.Length() > 0 {
-			seasonMap := make(map[int][]types.EpisodeList)
-
-			episodeLinks.Each(func(i int, a *goquery.Selection) {
-				href, _ := a.Attr("href")
-
-				re := regexp.MustCompile(`season-(\d+)-episode-(\d+)`)
-				matches := re.FindStringSubmatch(href)
-				if len(matches) > 2 {
-					seasonNum, _ := strconv.Atoi(matches[1])
-					epNum, _ := strconv.Atoi(matches[2])
-
-					ep := types.EpisodeList{
-						EpisodeNumber: sc.int32Ptr(int32(epNum)),
-						EpisodeUrl:    sc.stringPtr(sc.makeAbsoluteURL(href)),
-					}
-					seasonMap[seasonNum] = append(seasonMap[seasonNum], ep)
-				}
-			})
-
-			// Convert map to slice
-			maxSeason := 0
-			for k := range seasonMap {
-				if k > maxSeason {
-					maxSeason = k
-				}
-			}
-
-			for i := 1; i <= maxSeason; i++ {
-				season := types.SeasonList{}
-				seasonNum := int32(i)
-				season.CurrentSeason = &seasonNum
-				totalSeasons := int32(maxSeason)
-				season.TotalSeason = &totalSeasons
-				epList := seasonMap[i]
-				season.EpisodeList = &epList
-
-				seasons = append(seasons, season)
-			}
-		}
-	}
-
-	return seasons
-}
-func (sc *SeriesClient) GetEpisode(url string) (*types.SeriesEpisode, error) {
-	var htmlContent string
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
-	if err != nil {
-		logger.Logger.Error("Error loading episode page", zap.Error(err))
-		return nil, err
-	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
-		logger.Logger.Error("Error parsing episode HTML", zap.Error(err))
-		return nil, err
-	}
-
-	return sc.scrapeEpisode(doc), nil
-}
-func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisode {
-	episode := &types.SeriesEpisode{}
-
-	// Episode URL
-	episode.EpisodeUrl = sc.stringPtr(doc.Url.String())
-
-	// Extract episode number from title or URL
-	title := doc.Find("h1").Text()
-	re := regexp.MustCompile(`Episode\s*(\d+)`)
-	matches := re.FindStringSubmatch(title)
-	if len(matches) > 1 {
-		if epNum, err := strconv.Atoi(matches[1]); err == nil {
-			episode.EpisodeNumber = sc.int32Ptr(int32(epNum))
-		}
-	}
-
-	// Player URLs
-	var playerURLs []types.PlayerUrl
-	doc.Find(".player-selector a, .embed-options a").Each(func(i int, a *goquery.Selection) {
-		href, _ := a.Attr("href")
-		text := strings.TrimSpace(a.Text())
-		playerURLs = append(playerURLs, types.PlayerUrl{
-			URL:  sc.stringPtr(href),
-			Type: sc.stringPtr(text),
-		})
-	})
-	if len(playerURLs) > 0 {
-		episode.PlayerUrl = &playerURLs
-	}
-
-	// Download URL
-	downloadLink := doc.Find(".download-link a").First()
-	if href, ok := downloadLink.Attr("href"); ok {
-		episode.DownloadUrl = sc.stringPtr(href)
-	}
-
-	return episode
-}
-
-// Series Search
-func (sc *SeriesClient) Search(query string, page int) (*types.MovieListResponse, error) {
-	var url string
-	if page > 1 {
-		url = fmt.Sprintf("%s/search?s=%s&page=%d", SeriesBaseURL, query, page)
-	} else {
-		url = fmt.Sprintf("%s/search?s=%s", SeriesBaseURL, query)
-	}
-
-	fmt.Printf("Scraping search results for query: %s and page: %d\n", query, page)
-	fmt.Printf("Search URL: %s\n", url)
-
-	var htmlContent string
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
-	if err != nil {
-		logger.Logger.Error("Error loading search page", zap.Error(err))
-		return nil, err
-	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
-		logger.Logger.Error("Error parsing search HTML", zap.Error(err))
-		return nil, err
-	}
-
-	return sc.scrapeSeriesList(doc), nil
-}
-
-// Series Latest
-func (sc *SeriesClient) GetLatest(page int) (*types.MovieListResponse, error) {
-	return sc.GetSeriesList(SeriesBaseURL+"/latest-series/", page)
-}
-
-// Helper functions
-func (sc *SeriesClient) scrapeAllLatestSeries(doc *goquery.Document) []types.Movie {
-	var movies []types.Movie
-
-	headers := []string{"Daftar Lengkap Series Terbaru", "Episode Terbaru", "Latest Series"}
-
-	for _, headerText := range headers {
-		doc.Find("h2").Each(func(i int, h *goquery.Selection) {
-			if strings.TrimSpace(h.Text()) == headerText {
-				headerDiv := h.Parent()
-				if headerDiv.Length() > 0 {
-					gallery := headerDiv.NextFiltered(".gallery-grid")
-					if gallery.Length() > 0 {
-						movies = sc.scrapeGalleryMovies(gallery)
-					}
-				}
-			}
-		})
-		if len(movies) > 0 {
-			break
-		}
-	}
-
-	return movies
-}
-
-func (sc *SeriesClient) parseDuration(dur string) int {
-	dur = strings.TrimSpace(dur)
-	parts := strings.Split(dur, ":")
-
-	var totalSeconds int
-
-	if len(parts) == 2 {
-		if minutes, err := strconv.Atoi(parts[0]); err == nil {
-			totalSeconds += minutes * 60
-		}
-		if seconds, err := strconv.Atoi(parts[1]); err == nil {
-			totalSeconds += seconds
-		}
-	} else if len(parts) == 3 {
-		if hours, err := strconv.Atoi(parts[0]); err == nil {
-			totalSeconds += hours * 3600
-		}
-		if minutes, err := strconv.Atoi(parts[1]); err == nil {
-			totalSeconds += minutes * 60
-		}
-		if seconds, err := strconv.Atoi(parts[2]); err == nil {
-			totalSeconds += seconds
-		}
-	}
-
-	return totalSeconds
-}
-
 func (sc *SeriesClient) makeAbsoluteURL(url string) string {
 	if url == "" {
 		return ""
@@ -899,7 +1363,27 @@ func (sc *SeriesClient) makeAbsoluteURL(url string) string {
 	}
 	return SeriesBaseURL + url
 }
+func (sc *SeriesClient) makeAbsoluteSlugURL(slug string) string {
+	if slug == "" {
+		return ""
+	}
 
+	var rawSlug string
+	if strings.HasPrefix(slug, "http") {
+		u, err := url.Parse(slug)
+		if err != nil {
+			rawSlug = slug
+		} else {
+			rawSlug = u.Path
+		}
+	} else {
+		rawSlug = slug
+	}
+
+	cleanSlug := sc.makeCleanPathname(rawSlug)
+
+	return SeriesBaseURL + cleanSlug
+}
 func (sc *SeriesClient) getViewAllURL(s *goquery.Selection) *string {
 	var viewAllURL *string
 
@@ -933,7 +1417,6 @@ func (sc *SeriesClient) getViewAllURL(s *goquery.Selection) *string {
 
 	return viewAllURL
 }
-
 func (mc *SeriesClient) makeCleanPathname(pathname string) string {
 	re := regexp.MustCompile(`^/+|/+$`)
 	return re.ReplaceAllString(pathname, "")

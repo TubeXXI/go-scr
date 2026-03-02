@@ -3,7 +3,7 @@ package types
 import (
 	"time"
 
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 )
 
 type Movie struct {
@@ -53,6 +53,7 @@ type SeriesDetail struct {
 	Countries     *[]CountryMovie `json:"countries" validate:"omitempty"`
 	Genres        *[]Genre        `json:"genres" validate:"omitempty"`
 	SimilarMovies *[]Movie        `json:"similar_movies" validate:"omitempty"`
+	TrailerUrl    *string         `json:"trailer_url" validate:"omitempty"`
 	DownloadLink  *string         `json:"download_link" validate:"omitempty"`
 	Type          string          `json:"type" validate:"required"` // 'movie' | 'series'
 	SourceUrl     *string         `json:"source_url" validate:"omitempty"`
@@ -93,6 +94,7 @@ type EpisodeList struct {
 }
 
 type SeriesEpisode struct {
+	LabelQuality  *string      `json:"label_quality" validate:"omitempty"`
 	EpisodeUrl    *string      `json:"episode_url" validate:"omitempty"`
 	EpisodeNumber *int32       `json:"episode_number" validate:"omitempty"`
 	PlayerUrl     *[]PlayerUrl `json:"player_url" validate:"omitempty"`

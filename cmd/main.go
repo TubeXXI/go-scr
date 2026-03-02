@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"tubexxi/scraper/pkg/logger"
 	"tubexxi/scraper/pkg/scraper"
 	"tubexxi/scraper/pkg/utils"
@@ -221,8 +220,9 @@ func runMovieScraper(method string) {
 		if err != nil {
 			logger.Logger.Error("Error getting home data", zap.Error(err))
 		} else if data != nil {
-			timeMill := time.Now().UnixMilli()
-			filename := fmt.Sprintf("home_%d.json", timeMill)
+			// timeMill := time.Now().UnixMilli()
+			// filename := fmt.Sprintf("home_%d.json", timeMill)
+			filename := "home.json"
 			fullPath := filepath.Join(resultDir, filename)
 			if err := saveToFile(fullPath, data); err != nil {
 				logger.Logger.Error("Error saving home data", zap.Error(err))
@@ -470,16 +470,17 @@ func runSeriesScraper(method string) {
 		fmt.Println("Scraping home page...")
 
 		data, err := client.GetHome()
+
 		if err != nil {
 			logger.Logger.Error("Error getting home data", zap.Error(err))
 		} else if data != nil {
-			timeMill := time.Now().UnixMilli()
-			filename := fmt.Sprintf("home_%d.json", timeMill)
+			filename := "home.json"
 			fullPath := filepath.Join(resultDir, filename)
 			if err := saveToFile(fullPath, data); err != nil {
 				logger.Logger.Error("Error saving home data", zap.Error(err))
 			}
 		}
+
 	case Country:
 		countryPrompt := &survey.Input{
 			Message: "Enter country (e.g., USA, UK, India):",
@@ -683,7 +684,7 @@ func runSeriesScraper(method string) {
 		}
 	case Detail:
 		pathPrompt := &survey.Input{
-			Message: "Enter movies path (e.g., /taxi-driver-mobeomtaeksi-2021):",
+			Message: "Enter series path (e.g., /taxi-driver-mobeomtaeksi-2021):",
 			Default: "/taxi-driver-mobeomtaeksi-2021",
 		}
 		path := ""
@@ -699,6 +700,26 @@ func runSeriesScraper(method string) {
 			fullPath := filepath.Join(resultDir, filename)
 			if err := saveToFile(fullPath, data); err != nil {
 				logger.Logger.Error("Error saving series detail", zap.Error(err))
+			}
+		}
+	case Episode:
+		pathPrompt := &survey.Input{
+			Message: "Enter series episode path (e.g., /taxi-driver-mobeomtaeksi-season-3-episode-1-2021):",
+			Default: "/taxi-driver-mobeomtaeksi-season-3-episode-1-2021",
+		}
+		path := ""
+		if err := survey.AskOne(pathPrompt, &path); err != nil {
+			logger.Logger.Fatal("Error getting series episode path input", zap.Error(err))
+		}
+
+		data, err := client.GetEpisode(path)
+		if err != nil {
+			logger.Logger.Error("Error getting series episode detail", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("detail_%s.json", strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "-", "_"))
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving series episode detail", zap.Error(err))
 			}
 		}
 	default:

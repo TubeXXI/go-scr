@@ -15,7 +15,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -63,7 +63,6 @@ func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperResponse {
 	var results []types.HomeScrapperResponse
 
-	// Define category mappings with their aria-label keys
 	categoryMappings := []struct {
 		ariaLabel string
 		key       string
@@ -86,13 +85,11 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 		{"India Terbaru", "Latest Indian Movies"},
 	}
 
-	// Create a map for quick lookup
 	ariaToKey := make(map[string]string)
 	for _, m := range categoryMappings {
 		ariaToKey[m.ariaLabel] = m.key
 	}
 
-	// Scrape from .slider-wrapper
 	doc.Find(".slider-wrapper").Each(func(i int, s *goquery.Selection) {
 		ariaLabel, _ := s.Attr("aria-label")
 		key := ariaToKey[ariaLabel]
@@ -100,7 +97,6 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 			return
 		}
 
-		// Get movies
 		movies := mc.scrapeSliderMovies(s)
 		if len(movies) == 0 {
 			sliders := s.Find("ul.sliders")
@@ -114,7 +110,7 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 			url := mc.getViewAllURL(s)
 
 			if url != nil && *url != "" {
-				absoluteURL := mc.makeAbsoluteURL(*url)
+				absoluteURL := mc.makeAbsoluteSlugURL(*url)
 				viewAllURL = &absoluteURL
 			}
 
@@ -162,7 +158,7 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 
 	allLatest := mc.scrapeAllLatestMovies(doc)
 	if len(allLatest) > 0 {
-		latestURL := mc.makeAbsoluteURL("/latest")
+		latestURL := mc.makeAbsoluteSlugURL("/latest")
 		results = append(results, types.HomeScrapperResponse{
 			Key:        "All Latest Movies",
 			Value:      allLatest,
@@ -175,7 +171,6 @@ func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperRes
 func (mc *MovieClient) scrapeSliderMovies(s *goquery.Selection) []types.Movie {
 	var movies []types.Movie
 
-	// Handle both .slider-item and .slider classes
 	s.Find(".slider-item, .slider").Each(func(i int, item *goquery.Selection) {
 		movie := mc.parseArticle(item)
 		if movie.Title != "" {
@@ -188,37 +183,32 @@ func (mc *MovieClient) scrapeSliderMovies(s *goquery.Selection) []types.Movie {
 func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 	movie := &types.Movie{}
 
-	// ID
-	id := uuid.Must(uuid.NewV4())
+	id := uuid.New()
 	movie.ID = id
 
-	// Title
 	title := article.Find(".poster-title").Text()
 	if title == "" {
 		title = article.Find(".video-title").Text()
 	}
 	movie.Title = strings.TrimSpace(title)
 
-	// URL
 	var originalPageURL string
 	article.Find("a[itemprop='url']").Each(func(i int, a *goquery.Selection) {
 		if href, ok := a.Attr("href"); ok {
-			originalPageURL = mc.makeAbsoluteURL(href)
+			originalPageURL = mc.makeAbsoluteSlugURL(href)
 		}
 	})
 	if originalPageURL == "" {
 		article.Find("a[href]").Each(func(i int, a *goquery.Selection) {
 			if href, ok := a.Attr("href"); ok && strings.Contains(href, "/movie/") {
-				originalPageURL = mc.makeAbsoluteURL(href)
+				originalPageURL = mc.makeAbsoluteSlugURL(href)
 			}
 		})
 	}
 	movie.OriginalPageUrl = &originalPageURL
 
-	// Thumbnail - try picture source first
 	picture := article.Find("picture").First()
 	if picture.Length() > 0 {
-		// Try webp first
 		webp := picture.Find("source[type='image/webp']").First()
 		if srcset, ok := webp.Attr("srcset"); ok {
 			parts := strings.Split(srcset, ",")
@@ -227,7 +217,6 @@ func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 				movie.Thumbnail = mc.stringPtr(thumbnail)
 			}
 		}
-		// Fallback to jpeg
 		if movie.Thumbnail == nil {
 			jpeg := picture.Find("source[type='image/jpeg']").First()
 			if srcset, ok := jpeg.Attr("srcset"); ok {
@@ -239,14 +228,12 @@ func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 			}
 		}
 	}
-	// Fallback to img tag
 	if movie.Thumbnail == nil {
-		if img, ok := article.Find("img[itemprop='image']").Attr("src"); ok {
+		if img, ok := article.Find(".poster img").Attr("src"); ok {
 			movie.Thumbnail = mc.stringPtr(img)
 		}
 	}
 
-	// Year
 	yearStr := article.Find(".year").Text()
 	if yearStr == "" {
 		yearStr = article.Find(".video-year").Text()
@@ -257,19 +244,44 @@ func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 		}
 	}
 
-	// Rating
 	ratingStr := article.Find("[itemprop='ratingValue']").Text()
 	if ratingStr != "" {
 		if rating, err := strconv.ParseFloat(strings.TrimSpace(ratingStr), 64); err == nil {
 			movie.Rating = mc.float64Ptr(rating)
 		}
 	}
+	if movie.Rating == nil {
+		rawRating := strings.TrimSpace(article.Find(".rating").Text())
+		if rawRating != "" {
+			re := regexp.MustCompile(`[0-9.]+`)
+			match := re.FindString(rawRating)
+			if match != "" {
+				if val, err := strconv.ParseFloat(match, 64); err == nil {
+					movie.Rating = mc.float64Ptr(val)
+				}
+			}
+		}
+	}
 
-	// Duration
 	durationStr := article.Find(".duration").Text()
 	if durationStr != "" {
 		if duration := mc.parseDuration(durationStr); duration > 0 {
 			movie.Duration = mc.int64Ptr(int64(duration))
+		}
+	}
+	if movie.Duration == nil {
+		if dur := strings.TrimSpace(article.Find(".poster .duration").Text()); dur != "" {
+			parts := strings.Split(dur, ":")
+			if len(parts) == 2 {
+				minutes, _ := strconv.Atoi(parts[0])
+				seconds, _ := strconv.Atoi(parts[1])
+
+				totalMinutes := minutes
+				if seconds >= 30 {
+					totalMinutes++
+				}
+				movie.Duration = mc.int64Ptr(int64(totalMinutes))
+			}
 		}
 	}
 
@@ -280,36 +292,31 @@ func (mc *MovieClient) parseArticle(article *goquery.Selection) *types.Movie {
 	}
 	quality = strings.ReplaceAll(quality, "strong", "")
 	movie.LabelQuality = mc.stringPtr(strings.TrimSpace(quality))
+	if movie.LabelQuality == nil {
+		episodeSpan := article.Find(".episode")
+		if episodeSpan.Length() > 0 {
+			prefix := ""
+			episodeSpan.Contents().Each(func(i int, s *goquery.Selection) {
+				if goquery.NodeName(s) == "#text" {
+					prefix = strings.TrimSpace(s.Text())
+				}
+			})
+
+			episodeNum := strings.TrimSpace(episodeSpan.Find("strong").Text())
+
+			if prefix != "" && episodeNum != "" {
+				movie.LabelQuality = mc.stringPtr(fmt.Sprintf("%s %s", prefix, episodeNum))
+			} else {
+				movie.LabelQuality = mc.stringPtr(strings.TrimSpace(episodeSpan.Text()))
+			}
+		}
+	}
 
 	// Genre
-	genre := article.Find("[itemprop='genre']").Text()
+	genre := article.Find(".genre").Text()
 	movie.Genre = mc.stringPtr(strings.TrimSpace(genre))
 
 	return movie
-}
-func (mc *MovieClient) parseDuration(durationStr string) int {
-	durationStr = strings.ToLower(durationStr)
-
-	re := regexp.MustCompile(`(\d+)h\s*(\d+)m`)
-	if matches := re.FindStringSubmatch(durationStr); len(matches) > 2 {
-		hours, _ := strconv.Atoi(matches[1])
-		minutes, _ := strconv.Atoi(matches[2])
-		return hours*60 + minutes
-	}
-
-	re = regexp.MustCompile(`(\d+)m`)
-	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
-		minutes, _ := strconv.Atoi(matches[1])
-		return minutes
-	}
-
-	re = regexp.MustCompile(`(\d+)\s*menit`)
-	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
-		minutes, _ := strconv.Atoi(matches[1])
-		return minutes
-	}
-
-	return 0
 }
 
 // Movie List
@@ -377,101 +384,6 @@ func (mc *MovieClient) scrapeMovieList(doc *goquery.Document) *types.MovieListRe
 
 	return response
 }
-func (mc *MovieClient) parsePagination(doc *goquery.Document) types.Pagination {
-	pagination := types.Pagination{
-		CurrentPage: 1,
-		TotalPage:   1,
-		HasNext:     false,
-		HasPrev:     false,
-	}
-
-	var paginationEl *goquery.Selection
-
-	wrapper := doc.Find("nav.pagination-wrapper")
-	if wrapper.Length() > 0 {
-		paginationEl = wrapper.Find("ul.pagination")
-	}
-
-	if paginationEl == nil || paginationEl.Length() == 0 {
-		paginationEl = doc.Find("ul.pagination")
-	}
-
-	if paginationEl == nil || paginationEl.Length() == 0 {
-		paginationEl = doc.Find(".pagination")
-	}
-
-	if paginationEl == nil || paginationEl.Length() == 0 {
-		return pagination
-	}
-
-	pageRegex := regexp.MustCompile(`/page/(\d+)/?`)
-	var maxPage int = 1
-	var currentPage int = 1
-	pageToURL := make(map[int]string)
-
-	paginationEl.Find("li a").Each(func(i int, a *goquery.Selection) {
-		href, exists := a.Attr("href")
-		if !exists {
-			return
-		}
-
-		text := strings.TrimSpace(a.Text())
-		absoluteURL := mc.makeAbsoluteURL(href)
-
-		// Extract page number from URL
-		matches := pageRegex.FindStringSubmatch(href)
-		if len(matches) > 1 {
-			if page, err := strconv.Atoi(matches[1]); err == nil {
-				pageToURL[page] = absoluteURL
-
-				// Update maxPage - including the "»" link because it contains the largest page number
-				if page > maxPage {
-					maxPage = page
-				}
-			}
-		}
-
-		// Check if this is current page
-		if a.Parent().HasClass("active") {
-			// Try to get page from text first
-			if page, err := strconv.Atoi(text); err == nil {
-				currentPage = page
-			} else if len(matches) > 1 {
-				if page, err := strconv.Atoi(matches[1]); err == nil {
-					currentPage = page
-				}
-			}
-		}
-	})
-
-	// Set values
-	pagination.CurrentPage = int32(currentPage)
-	pagination.TotalPage = int32(maxPage)
-	pagination.HasNext = currentPage < maxPage
-	pagination.HasPrev = currentPage > 1
-
-	// Set next URL (can be from page+1 or from link "»")
-	if nextURL, ok := pageToURL[currentPage+1]; ok {
-		pagination.NextPageUrl = &nextURL
-	} else if pagination.HasNext {
-		// Fallback: search for links with text "»"
-		paginationEl.Find("li a").Each(func(i int, a *goquery.Selection) {
-			if strings.TrimSpace(a.Text()) == "»" {
-				if href, ok := a.Attr("href"); ok {
-					url := mc.makeAbsoluteURL(href)
-					pagination.NextPageUrl = &url
-				}
-			}
-		})
-	}
-
-	// Set prev URL
-	if prevURL, ok := pageToURL[currentPage-1]; ok {
-		pagination.PrevPageUrl = &prevURL
-	}
-
-	return pagination
-}
 
 // Movie Details
 func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, error) {
@@ -518,6 +430,7 @@ func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, erro
 	}
 
 	detail := mc.scrapeMovieDetail(doc, finalURL)
+	detail.ID = uuid.New()
 	detail.SourceUrl = mc.stringPtr(finalURL)
 
 	if mc.isSeriesByFinalURL(finalURL) || mc.looksLikeSeriesPage(doc) {
@@ -533,9 +446,9 @@ func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL stri
 
 	detail.OriginalPageUrl = &originalURL
 
-	titleDiv := doc.Find(".movie-info")
-	if titleDiv.Length() > 0 {
-		h1 := titleDiv.Find("h1")
+	movieInfo := doc.Find(".movie-info")
+	if movieInfo.Length() > 0 {
+		h1 := movieInfo.Find("h1")
 		if h1.Length() > 0 {
 			rawTitle := h1.Text()
 			rawTitle = strings.ReplaceAll(rawTitle, "Nonton ", "")
@@ -677,7 +590,7 @@ func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL stri
 		tagList.Find("a").Each(func(i int, a *goquery.Selection) {
 			href, _ := a.Attr("href")
 			text := strings.TrimSpace(a.Text())
-			absoluteURL := mc.makeAbsoluteURL(href)
+			absoluteURL := mc.makeAbsoluteSlugURL(href)
 
 			if strings.Contains(href, "/genre/") {
 				genres = append(genres, text)
@@ -725,7 +638,7 @@ func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL stri
 					href, _ := a.Attr("href")
 					directors = append(directors, types.MoviePerson{
 						Name:    mc.stringPtr(strings.TrimSpace(a.Text())),
-						PageUrl: mc.stringPtr(mc.makeAbsoluteURL(href)),
+						PageUrl: mc.stringPtr(mc.makeAbsoluteSlugURL(href)),
 					})
 				})
 				if len(directors) > 0 {
@@ -737,7 +650,7 @@ func (mc *MovieClient) scrapeMovieDetail(doc *goquery.Document, originalURL stri
 					href, _ := a.Attr("href")
 					stars = append(stars, types.MoviePerson{
 						Name:    mc.stringPtr(strings.TrimSpace(a.Text())),
-						PageUrl: mc.stringPtr(mc.makeAbsoluteURL(href)),
+						PageUrl: mc.stringPtr(mc.makeAbsoluteSlugURL(href)),
 					})
 				})
 				if len(stars) > 0 {
@@ -938,9 +851,9 @@ func (mc *MovieClient) GetTopRated(page int) (*types.MovieListResponse, error) {
 func (mc *MovieClient) Search(query string, page int) (*types.MovieListResponse, error) {
 	var url string
 	if page > 1 {
-		url = fmt.Sprintf("%s/search?s=%s&page=%d", MovieBaseURL, query, page)
+		url = fmt.Sprintf("%ssearch?s=%s&page=%d", MovieBaseURL, query, page)
 	} else {
-		url = fmt.Sprintf("%s/search?s=%s", MovieBaseURL, query)
+		url = fmt.Sprintf("%ssearch?s=%s", MovieBaseURL, query)
 	}
 
 	fmt.Printf("Scraping search results for query: %s and page: %d\n", query, page)
@@ -974,33 +887,27 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 	var similarMovies []types.Movie
 
 	doc.Find(".related-content .video-list li").Each(func(i int, li *goquery.Selection) {
-		// Cari link utama
 		a := li.Find("a")
 		if a.Length() == 0 {
 			return
 		}
 
-		// Ambil href untuk original page URL
 		href, exists := a.Attr("href")
 		if !exists {
 			return
 		}
-		originalPageURL := mc.makeAbsoluteURL(href)
+		originalPageURL := MovieBaseURL + mc.makeCleanPathname(href)
 
-		// Ambil gambar
 		var thumbnail string
 		img := li.Find("img")
 		if img.Length() > 0 {
-			// Coba ambil dari srcset dulu (untuk kualitas lebih baik)
 			if srcset, exists := img.Attr("srcset"); exists && srcset != "" {
-				// Ambil URL pertama dari srcset
 				parts := strings.Fields(srcset)
 				if len(parts) > 0 {
 					thumbnail = parts[0]
 				}
 			}
 
-			// Fallback ke src jika srcset tidak ada
 			if thumbnail == "" {
 				if src, exists := img.Attr("src"); exists {
 					thumbnail = src
@@ -1008,24 +915,19 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 			}
 		}
 
-		// Ambil informasi dari video-info
 		videoInfo := li.Find(".video-info")
 		if videoInfo.Length() == 0 {
 			return
 		}
 
-		// Ambil title
 		title := strings.TrimSpace(videoInfo.Find(".video-title").Text())
 		if title == "" {
-			// Fallback ke alt gambar
 			if alt, exists := img.Attr("alt"); exists {
 				title = strings.TrimSpace(alt)
-				// Hapus tahun jika ada di alt (format: "Title (Year)")
 				title = regexp.MustCompile(`\s*\(\d{4}\)$`).ReplaceAllString(title, "")
 			}
 		}
 
-		// Ambil year
 		var year int32
 		yearText := strings.TrimSpace(videoInfo.Find(".video-year").Text())
 		if yearText != "" {
@@ -1034,7 +936,6 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 			}
 		}
 
-		// Jika year tidak ditemukan, coba ekstrak dari alt
 		if year == 0 {
 			if alt, exists := img.Attr("alt"); exists {
 				re := regexp.MustCompile(`\((\d{4})\)`)
@@ -1046,8 +947,8 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 			}
 		}
 
-		// Buat movie object
 		movie := types.Movie{
+			ID:              uuid.New(),
 			Title:           title,
 			Thumbnail:       mc.stringPtr(mc.makeAbsoluteURL(thumbnail)),
 			Year:            &year,
@@ -1060,7 +961,6 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 		}
 	})
 
-	// Fallback: coba selector lain jika tidak ditemukan
 	if len(similarMovies) == 0 {
 		doc.Find(".related-content .video-list-wrapper .video-list li").Each(func(i int, li *goquery.Selection) {
 			a := li.Find("a")
@@ -1098,7 +998,7 @@ func (mc *MovieClient) parseSimilarMovies(doc *goquery.Document) []types.Movie {
 					Title:           title,
 					Thumbnail:       mc.stringPtr(mc.makeAbsoluteURL(thumbnail)),
 					Year:            &year,
-					OriginalPageUrl: mc.stringPtr(mc.makeAbsoluteURL(href)),
+					OriginalPageUrl: mc.stringPtr(mc.makeAbsoluteSlugURL(href)),
 				})
 			}
 		})
@@ -1130,7 +1030,6 @@ func (mc *MovieClient) scrapeAllLatestMovies(doc *goquery.Document) []types.Movi
 
 	return movies
 }
-
 func (mc *MovieClient) scrapeGalleryMovies(s *goquery.Selection) []types.Movie {
 	var movies []types.Movie
 
@@ -1143,7 +1042,125 @@ func (mc *MovieClient) scrapeGalleryMovies(s *goquery.Selection) []types.Movie {
 
 	return movies
 }
+func (mc *MovieClient) parsePagination(doc *goquery.Document) types.Pagination {
+	pagination := types.Pagination{
+		CurrentPage: 1,
+		TotalPage:   1,
+		HasNext:     false,
+		HasPrev:     false,
+	}
 
+	var paginationEl *goquery.Selection
+
+	wrapper := doc.Find("nav.pagination-wrapper")
+	if wrapper.Length() > 0 {
+		paginationEl = wrapper.Find("ul.pagination")
+	}
+
+	if paginationEl == nil || paginationEl.Length() == 0 {
+		paginationEl = doc.Find("ul.pagination")
+	}
+
+	if paginationEl == nil || paginationEl.Length() == 0 {
+		paginationEl = doc.Find(".pagination")
+	}
+
+	if paginationEl == nil || paginationEl.Length() == 0 {
+		return pagination
+	}
+
+	pageRegex := regexp.MustCompile(`/page/(\d+)/?`)
+	var maxPage int = 1
+	var currentPage int = 1
+	pageToURL := make(map[int]string)
+
+	paginationEl.Find("li a").Each(func(i int, a *goquery.Selection) {
+		href, exists := a.Attr("href")
+		if !exists {
+			return
+		}
+
+		text := strings.TrimSpace(a.Text())
+		absoluteURL := mc.makeAbsoluteURL(href)
+
+		// Extract page number from URL
+		matches := pageRegex.FindStringSubmatch(href)
+		if len(matches) > 1 {
+			if page, err := strconv.Atoi(matches[1]); err == nil {
+				pageToURL[page] = absoluteURL
+
+				// Update maxPage - including the "»" link because it contains the largest page number
+				if page > maxPage {
+					maxPage = page
+				}
+			}
+		}
+
+		// Check if this is current page
+		if a.Parent().HasClass("active") {
+			// Try to get page from text first
+			if page, err := strconv.Atoi(text); err == nil {
+				currentPage = page
+			} else if len(matches) > 1 {
+				if page, err := strconv.Atoi(matches[1]); err == nil {
+					currentPage = page
+				}
+			}
+		}
+	})
+
+	// Set values
+	pagination.CurrentPage = int32(currentPage)
+	pagination.TotalPage = int32(maxPage)
+	pagination.HasNext = currentPage < maxPage
+	pagination.HasPrev = currentPage > 1
+
+	// Set next URL (can be from page+1 or from link "»")
+	if nextURL, ok := pageToURL[currentPage+1]; ok {
+		pagination.NextPageUrl = &nextURL
+	} else if pagination.HasNext {
+		// Fallback: search for links with text "»"
+		paginationEl.Find("li a").Each(func(i int, a *goquery.Selection) {
+			if strings.TrimSpace(a.Text()) == "»" {
+				if href, ok := a.Attr("href"); ok {
+					url := mc.makeAbsoluteURL(href)
+					pagination.NextPageUrl = &url
+				}
+			}
+		})
+	}
+
+	// Set prev URL
+	if prevURL, ok := pageToURL[currentPage-1]; ok {
+		pagination.PrevPageUrl = &prevURL
+	}
+
+	return pagination
+}
+func (mc *MovieClient) parseDuration(durationStr string) int {
+	durationStr = strings.ToLower(durationStr)
+
+	re := regexp.MustCompile(`(\d+)h\s*(\d+)m`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 2 {
+		hours, _ := strconv.Atoi(matches[1])
+		minutes, _ := strconv.Atoi(matches[2])
+		return hours*60 + minutes
+	}
+
+	re = regexp.MustCompile(`(\d+)m`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
+		minutes, _ := strconv.Atoi(matches[1])
+		return minutes
+	}
+
+	re = regexp.MustCompile(`(\d+)\s*menit`)
+	if matches := re.FindStringSubmatch(durationStr); len(matches) > 1 {
+		minutes, _ := strconv.Atoi(matches[1])
+		return minutes
+	}
+
+	return 0
+}
 func (mc *MovieClient) makeAbsoluteURL(url string) string {
 	if url == "" {
 		return ""
@@ -1171,7 +1188,6 @@ func (mc *MovieClient) makeAbsoluteURL(url string) string {
 
 	return baseURL + url
 }
-
 func (mc *MovieClient) getViewAllURL(s *goquery.Selection) *string {
 	var viewAllURL *string
 
@@ -1205,10 +1221,23 @@ func (mc *MovieClient) getViewAllURL(s *goquery.Selection) *string {
 
 	return viewAllURL
 }
-
 func (mc *MovieClient) makeCleanPathname(pathname string) string {
 	re := regexp.MustCompile(`^/+|/+$`)
 	return re.ReplaceAllString(pathname, "")
+}
+func (sc *MovieClient) makeAbsoluteSlugURL(slug string) string {
+	if slug == "" {
+		return ""
+	}
+
+	cleanSlug := sc.makeCleanPathname(slug)
+
+	baseURL := MovieBaseURL
+	if strings.Contains(cleanSlug, "nontondrama?page=") {
+		cleanSlug = strings.Replace(cleanSlug, "nontondrama?page=", "", 1)
+		baseURL = SeriesBaseURL
+	}
+	return baseURL + cleanSlug
 }
 func (mc *MovieClient) looksLikeSeriesPage(doc *goquery.Document) bool {
 	if doc.Find("#season-data").Length() > 0 {
