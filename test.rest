@@ -1,3 +1,0 @@
-## Test url
-GET https://series.lk21.de/no-tail-tell-2026
-Content-Type: application/json
