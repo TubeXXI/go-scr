@@ -94,12 +94,19 @@ type EpisodeList struct {
 }
 
 type SeriesEpisode struct {
-	LabelQuality  *string      `json:"label_quality" validate:"omitempty"`
-	EpisodeUrl    *string      `json:"episode_url" validate:"omitempty"`
-	EpisodeNumber *int32       `json:"episode_number" validate:"omitempty"`
-	PlayerUrl     *[]PlayerUrl `json:"player_url" validate:"omitempty"`
-	TrailerUrl    *string      `json:"trailer_url" validate:"omitempty"`
-	DownloadUrl   *string      `json:"download_url" validate:"omitempty"`
+	LabelQuality  *string             `json:"label_quality" validate:"omitempty"`
+	EpisodeUrl    *string             `json:"episode_url" validate:"omitempty"`
+	SeasonNumber  *int32              `json:"season_number" validate:"omitempty"`
+	EpisodeNumber *int32              `json:"episode_number" validate:"omitempty"`
+	PlayerUrl     *[]PlayerUrl        `json:"player_url" validate:"omitempty"`
+	TrailerUrl    *string             `json:"trailer_url" validate:"omitempty"`
+	DownloadUrl   *string             `json:"download_url" validate:"omitempty"`
+	Pagination    *[]PlayerPagination `json:"pagination" validate:"omitempty"`
+}
+
+type PlayerPagination struct {
+	Name    *string `json:"name" validate:"omitempty"`
+	PageUrl *string `json:"page_url" validate:"omitempty"`
 }
 
 type HomeScrapperListResponse struct {

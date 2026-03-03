@@ -942,6 +942,54 @@ func (sc *SeriesClient) GetEpisode(pathname string) (*types.SeriesEpisode, error
 func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisode {
 	episode := &types.SeriesEpisode{}
 
+	movieInfo := doc.Find(".movie-info")
+	if movieInfo.Length() > 0 {
+		infoTag := doc.Find(".info-tag")
+		if infoTag.Length() > 0 {
+			var qualities []string
+
+			infoTag.Find("span").Each(func(i int, span *goquery.Selection) {
+				text := strings.TrimSpace(span.Text())
+				if text == "" {
+					return
+				}
+
+				qualityKeywords := []string{"BluRay", "WEBDL", "HDRip", "4K", "1080p", "720p", "480p", "CAM", "TS", "HDTC"}
+				for _, keyword := range qualityKeywords {
+					if strings.Contains(text, keyword) {
+						qualities = append(qualities, text)
+						return
+					}
+				}
+			})
+
+			if len(qualities) > 0 {
+				qualityStr := strings.Join(qualities, ", ")
+				episode.LabelQuality = &qualityStr
+			}
+
+		}
+
+		title := movieInfo.Find("h1").Text()
+		if title != "" {
+			reSes := regexp.MustCompile(`(?i)Season\s+(\d+)`)
+			if matchesSes := reSes.FindStringSubmatch(title); len(matchesSes) > 1 {
+				if num, err := strconv.Atoi(matchesSes[1]); err == nil {
+					episode.SeasonNumber = sc.int32Ptr(int32(num))
+				}
+			}
+
+			reEps := regexp.MustCompile(`(?i)Episode\s+(\d+)`)
+			if matchesEps := reEps.FindStringSubmatch(title); len(matchesEps) > 1 {
+				if num, err := strconv.Atoi(matchesEps[1]); err == nil {
+					episode.EpisodeNumber = sc.int32Ptr(int32(num))
+				}
+			}
+
+		}
+
+	}
+
 	var playerURLs []types.PlayerUrl
 	doc.Find("#player-list li a").Each(func(i int, a *goquery.Selection) {
 		href, exists := a.Attr("href")
@@ -1000,6 +1048,48 @@ func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisod
 
 	if len(playerURLs) > 0 {
 		episode.PlayerUrl = &playerURLs
+	}
+
+	downloadSelectors := []string{
+		".movie-action a[title*='Download']",
+		".movie-action a.btn[href*='dl.']",
+		".movie-action a[href*='download']",
+		".download-link a",
+		"a.btn[title*='Download']",
+		".movie-action a.btn:contains('DOWNLOAD')",
+	}
+	for _, selector := range downloadSelectors {
+		downloadLink := doc.Find(selector).First()
+		if downloadLink.Length() > 0 {
+			if href, exists := downloadLink.Attr("href"); exists && href != "" && href != "#" {
+				episode.DownloadUrl = sc.stringPtr(href)
+				break
+			}
+		}
+	}
+
+	var playerPaginations []types.PlayerPagination
+	doc.Find("player-action ul.action-right li a").Each(func(i int, a *goquery.Selection) {
+		href, exists := a.Attr("href")
+		if !exists || href == "" {
+			return
+		}
+
+		serverType := a.Find("i").Remove().Text()
+		if serverType == "" {
+			serverType = strings.TrimSpace(a.Text())
+		}
+
+		playPaginate := types.PlayerPagination{
+			Name:    sc.stringPtr(strings.ToUpper(serverType)),
+			PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
+		}
+
+		playerPaginations = append(playerPaginations, playPaginate)
+	})
+
+	if len(playerPaginations) > 0 {
+		episode.Pagination = &playerPaginations
 	}
 
 	return episode
