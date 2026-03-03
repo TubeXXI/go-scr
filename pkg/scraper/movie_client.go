@@ -46,6 +46,8 @@ func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 		return nil, err
 	}
 
+	logger.Logger.Debug("successfull get htmlcontent", zap.String("htmlContent", htmlContent))
+
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
 		logger.Logger.Error("Error parsing home HTML", zap.Error(err))
@@ -339,6 +341,8 @@ func (mc *MovieClient) GetMovieList(pathname string, page int) (*types.MovieList
 		logger.Logger.Error("Error loading movie list page", zap.Error(err))
 		return nil, err
 	}
+
+	logger.Logger.Debug("successfull get htmlcontent", zap.String("htmlContent", htmlContent))
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
@@ -859,6 +863,7 @@ func (mc *MovieClient) Search(query string, page int) (*types.MovieListResponse,
 		logger.Logger.Error("Error loading search page", zap.Error(err))
 		return nil, err
 	}
+	logger.Logger.Debug("successfull get htmlcontent", zap.String("htmlContent", htmlContent))
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
