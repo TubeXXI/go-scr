@@ -24,9 +24,9 @@ type MovieClient struct {
 	hTTPClient          *http.Client
 }
 
-func NewMovieClient() *MovieClient {
+func NewMovieClient(useProxy bool) *MovieClient {
 	return &MovieClient{
-		chromeClientStealth: NewChromeClientStealth(),
+		chromeClientStealth: NewChromeClientStealth(useProxy),
 		hTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }

@@ -17,22 +17,20 @@ import (
 )
 
 type AnimeClient struct {
-	ChromeClient *ChromeClient
-	HTTPClient   *http.Client
-	BaseURL      string
+	chromeClientStealth *ChromeClientStealth
+	hTTPClient          *http.Client
 }
 
-func NewAnimeClient() *AnimeClient {
+func NewAnimeClient(useProxy bool) *AnimeClient {
 	return &AnimeClient{
-		ChromeClient: NewChromeClient(),
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		BaseURL:      AnimeBaseURL,
+		chromeClientStealth: NewChromeClientStealth(useProxy),
+		hTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 func (ac *AnimeClient) Close() {
-	if ac.ChromeClient != nil {
-		ac.ChromeClient.Close()
+	if ac.chromeClientStealth != nil {
+		ac.chromeClientStealth.Close()
 	}
 }
 
@@ -40,9 +38,9 @@ func (ac *AnimeClient) Close() {
 func (ac *AnimeClient) GetLatest(page int) (*types.ScrapeResult, error) {
 	var url string
 	if page <= 1 {
-		url = fmt.Sprintf("%s/?post_type=anime", ac.BaseURL)
+		url = fmt.Sprintf("%s/?post_type=anime", AnimeBaseURL)
 	} else {
-		url = fmt.Sprintf("%s/page/%d/?post_type=anime", ac.BaseURL, page)
+		url = fmt.Sprintf("%s/page/%d/?post_type=anime", AnimeBaseURL, page)
 	}
 
 	html, err := ac.FetchHTML(url)
@@ -74,9 +72,9 @@ func (ac *AnimeClient) GetLatest(page int) (*types.ScrapeResult, error) {
 func (ac *AnimeClient) GetOngoing(page int) (*types.ScrapeResult, error) {
 	var url string
 	if page <= 1 {
-		url = fmt.Sprintf("%s/ongoing-anime/", ac.BaseURL)
+		url = fmt.Sprintf("%s/ongoing-anime/", AnimeBaseURL)
 	} else {
-		url = fmt.Sprintf("%s/ongoing-anime/page/%d/", ac.BaseURL, page)
+		url = fmt.Sprintf("%s/ongoing-anime/page/%d/", AnimeBaseURL, page)
 	}
 
 	html, err := ac.FetchHTML(url)
@@ -108,9 +106,9 @@ func (ac *AnimeClient) GetOngoing(page int) (*types.ScrapeResult, error) {
 func (ac *AnimeClient) GetComplete(page int) (*types.ScrapeResult, error) {
 	var url string
 	if page <= 1 {
-		url = fmt.Sprintf("%s/complete-anime/", ac.BaseURL)
+		url = fmt.Sprintf("%s/complete-anime/", AnimeBaseURL)
 	} else {
-		url = fmt.Sprintf("%s/complete-anime/page/%d/", ac.BaseURL, page)
+		url = fmt.Sprintf("%s/complete-anime/page/%d/", AnimeBaseURL, page)
 	}
 
 	html, err := ac.FetchHTML(url)
@@ -142,9 +140,9 @@ func (ac *AnimeClient) GetComplete(page int) (*types.ScrapeResult, error) {
 func (ac *AnimeClient) Search(query string, page int) (*types.ScrapeResult, error) {
 	var url string
 	if page <= 1 {
-		url = fmt.Sprintf("%s/?s=%s&post_type=anime", ac.BaseURL, query)
+		url = fmt.Sprintf("%s/?s=%s&post_type=anime", AnimeBaseURL, query)
 	} else {
-		url = fmt.Sprintf("%s/?s=%s&post_type=anime&page=%d", ac.BaseURL, query, page)
+		url = fmt.Sprintf("%s/?s=%s&post_type=anime&page=%d", AnimeBaseURL, query, page)
 	}
 
 	html, err := ac.FetchHTML(url)
@@ -175,7 +173,7 @@ func (ac *AnimeClient) Search(query string, page int) (*types.ScrapeResult, erro
 
 // GetGenres fetches the list of anime genres
 func (ac *AnimeClient) GetGenres() ([]types.AnimeGenre, error) {
-	url := fmt.Sprintf("%s/genre-list/", ac.BaseURL)
+	url := fmt.Sprintf("%s/genre-list/", AnimeBaseURL)
 
 	html, err := ac.FetchHTML(url)
 	if err != nil {
@@ -811,7 +809,7 @@ func (ac *AnimeClient) makeAbsoluteURL(url string) string {
 		return url
 	}
 
-	baseURL := ac.BaseURL
+	baseURL := AnimeBaseURL
 	if !strings.HasPrefix(url, "/") {
 		url = "/" + url
 	}
@@ -836,7 +834,7 @@ func (ac *AnimeClient) FetchHTML(url string) (string, error) {
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
-	err := chromedp.Run(ac.ChromeClient.ctx, actions...)
+	err := chromedp.Run(ac.chromeClientStealth.GetContext(), actions...)
 	if err != nil {
 		return "", err
 	}

@@ -201,7 +201,7 @@ func selectAnimeMethod() string {
 
 }
 func runMovieScraper(method string) {
-	client := scraper.NewMovieClient()
+	client := scraper.NewMovieClient(true)
 	defer client.Close()
 
 	resultDir := "../results/movies"
@@ -454,7 +454,7 @@ func runMovieScraper(method string) {
 	}
 }
 func runSeriesScraper(method string) {
-	client := scraper.NewSeriesClient()
+	client := scraper.NewSeriesClient(true)
 	defer client.Close()
 
 	resultDir := "../results/series"

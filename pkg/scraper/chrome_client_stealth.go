@@ -11,6 +11,7 @@ import (
 	"time"
 	"tubexxi/scraper/pkg/logger"
 
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/go-rod/stealth"
@@ -18,16 +19,35 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	MovieBaseURL  = "https://tv8.lk21official.cc/"
+	SeriesBaseURL = "https://tv3.nontondrama.my/"
+	AnimeBaseURL  = "https://otakudesu.best/"
+)
+
 type ChromeClientStealth struct {
-	ctx        context.Context
-	httpClient *http.Client
-	cb         *gobreaker.CircuitBreaker[string]
-	cancel     context.CancelFunc
+	ctx         context.Context
+	httpClient  *http.Client
+	cb          *gobreaker.CircuitBreaker[string]
+	cancel      context.CancelFunc
+	useProxy    bool
+	proxyConfig *ProxyConfig
 }
 
-func NewChromeClientStealth() *ChromeClientStealth {
+func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
+	var proxyConfig *ProxyConfig
+	if useProxy {
+		proxyConfig = GetProxyRotating()
+	}
+
+	var proxyURL string
+	if proxyConfig != nil {
+		proxyURL = proxyConfig.Server
+		logger.Logger.Info("Using rotating proxy", zap.String("proxy", maskProxyPassword(proxyURL)))
+	}
+
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
+		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("no-sandbox", true),
@@ -62,15 +82,33 @@ func NewChromeClientStealth() *ChromeClientStealth {
 		// Custom user agent
 		chromedp.UserAgent(randomUserAgent()),
 		// Disable automation detection
-		chromedp.Flag("excludeSwitches", "enable-automation"),
+		chromedp.Flag("use-gl", "desktop"),
+		chromedp.Flag("ignore-certificate-errors", true),
 	)
 
+	if proxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(proxyURL))
+	}
+
 	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, cancel := chromedp.NewContext(allocCtx)
 
-	// Create context - discard the cancel from NewContext, we use our own
-	ctx, _ := chromedp.NewContext(allocCtx)
-
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	if useProxy && proxyConfig != nil {
+		chromedp.ListenTarget(ctx, func(ev interface{}) {
+			if auth, ok := ev.(*fetch.EventAuthRequired); ok {
+				go func() {
+					err := chromedp.Run(ctx, fetch.ContinueWithAuth(auth.RequestID, &fetch.AuthChallengeResponse{
+						Response: "ProvideCredentials",
+						Username: proxyConfig.Username,
+						Password: proxyConfig.Password,
+					}))
+					if err != nil {
+						logger.Logger.Error("Proxy Auth Failed", zap.Error(err))
+					}
+				}()
+			}
+		})
+	}
 
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -112,16 +150,17 @@ func NewChromeClientStealth() *ChromeClientStealth {
 	})
 
 	return &ChromeClientStealth{
-		ctx:        ctx,
-		httpClient: httpClient,
-		cb:         cb,
-		cancel:     cancel,
+		ctx:         ctx,
+		httpClient:  httpClient,
+		cb:          cb,
+		cancel:      cancel,
+		proxyConfig: proxyConfig,
 	}
 }
 
 func NewChromeClientStealthWithProxy(proxyURL string) *ChromeClientStealth {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
+		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("no-sandbox", true),
@@ -146,22 +185,19 @@ func NewChromeClientStealthWithProxy(proxyURL string) *ChromeClientStealth {
 		chromedp.Flag("log-level", "3"),
 		chromedp.Flag("silent-download", true),
 		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("excludeSwitches", "enable-automation"),
+		chromedp.Flag("use-gl", "desktop"),
+		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.WindowSize(1920, 1080),
 		chromedp.UserAgent(randomUserAgent()),
 	)
 
-	// Add proxy if provided
 	if proxyURL != "" {
 		opts = append(opts, chromedp.ProxyServer(proxyURL))
 	}
 
 	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
 
-	// Create context - discard the cancel from NewContext, we use our own
-	ctx, _ := chromedp.NewContext(allocCtx)
-
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := chromedp.NewContext(allocCtx)
 
 	var transport *http.Transport
 	if proxyURL != "" {
@@ -226,14 +262,23 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 	var err error
 
 	for i := 0; i < maxRetries; i++ {
-		logger.Logger.Info("Navigating to URL", zap.String("url", targetURL), zap.Int("retry", i+1))
+		runCtx, cancel := context.WithTimeout(cc.ctx, 45*time.Second)
+		var tasks chromedp.Tasks
+		if cc.useProxy {
+			tasks = append(tasks, fetch.Enable())
+		}
 
-		err = chromedp.Run(cc.ctx,
+		tasks = append(tasks,
 			chromedp.Evaluate(stealth.JS, nil),
 			chromedp.Navigate(targetURL),
 			chromedp.Sleep(waitTime),
 			chromedp.OuterHTML("html", &htmlContent),
 		)
+
+		logger.Logger.Info("Navigating to URL", zap.String("url", targetURL), zap.Int("retry", i+1))
+
+		err := chromedp.Run(runCtx, tasks...)
+		cancel()
 
 		if err != nil {
 			logger.Logger.Warn("Navigation failed", zap.Error(err), zap.Int("retry", i+1))
@@ -288,7 +333,6 @@ func (cc *ChromeClientStealth) SetExtraHeaders(headers map[string]string) error 
 	return chromedp.Run(ctx, network.SetExtraHTTPHeaders(headerMap))
 }
 
-// randomUserAgent returns a random user agent string
 func randomUserAgent() string {
 	userAgents := []string{
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

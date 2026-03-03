@@ -26,9 +26,9 @@ type SeriesClient struct {
 	hTTPClient          *http.Client
 }
 
-func NewSeriesClient() *SeriesClient {
+func NewSeriesClient(useProxy bool) *SeriesClient {
 	return &SeriesClient{
-		chromeClientStealth: NewChromeClientStealth(),
+		chromeClientStealth: NewChromeClientStealth(useProxy),
 		hTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }
