@@ -262,7 +262,8 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 	var err error
 
 	for i := 0; i < maxRetries; i++ {
-		runCtx, cancel := context.WithTimeout(cc.ctx, 45*time.Second)
+		ctx, cancel := context.WithTimeout(cc.ctx, 60*time.Second)
+
 		var tasks chromedp.Tasks
 		if cc.useProxy {
 			tasks = append(tasks, fetch.Enable())
@@ -277,17 +278,15 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 
 		logger.Logger.Info("Navigating to URL", zap.String("url", targetURL), zap.Int("retry", i+1))
 
-		err := chromedp.Run(runCtx, tasks...)
+		err := chromedp.Run(ctx, tasks...)
 		cancel()
 
 		if err != nil {
 			logger.Logger.Warn("Navigation failed", zap.Error(err), zap.Int("retry", i+1))
-			// Wait before retry
 			time.Sleep(time.Duration(2+i) * time.Second)
 			continue
 		}
 
-		// Check if we got blocked by Cloudflare
 		if strings.Contains(htmlContent, "Cloudflare") ||
 			strings.Contains(htmlContent, "Just a moment") ||
 			strings.Contains(htmlContent, "Checking your browser") {
@@ -296,7 +295,6 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 			continue
 		}
 
-		// Success
 		return htmlContent, nil
 	}
 

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	XUI_HOST     = "174.138.75.37"
+	XUI_HOST     = "x-ui.agcforge.com/"
 	XUI_USERNAME = "tubexxi"
 	XUI_PASSWORD = "ngfbMybEOf"
 )
