@@ -20,35 +20,25 @@ import (
 )
 
 type MovieClient struct {
-	ChromeClient *ChromeClient
-	HTTPClient   *http.Client
+	chromeClientStealth *ChromeClientStealth
+	hTTPClient          *http.Client
 }
 
 func NewMovieClient() *MovieClient {
 	return &MovieClient{
-		ChromeClient: NewChromeClient(),
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+		chromeClientStealth: NewChromeClientStealth(),
+		hTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }
 func (mc *MovieClient) Close() {
-	if mc.ChromeClient != nil {
-		mc.ChromeClient.Close()
+	if mc.chromeClientStealth != nil {
+		mc.chromeClientStealth.Close()
 	}
 }
 
-// GetHome scrapes the home page and returns categories with Key, Value, and ViewAllUrl
 func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
-	var htmlContent string
-	var err error
-
-	_, err = mc.ChromeClient.cb.Execute(func() (any, error) {
-		actions := []chromedp.Action{
-			chromedp.Navigate(MovieBaseURL),
-			chromedp.Sleep(3 * time.Second),
-			chromedp.OuterHTML("html", &htmlContent),
-		}
-
-		return nil, chromedp.Run(mc.ChromeClient.ctx, actions...)
+	htmlContent, err := mc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return mc.chromeClientStealth.NavigateWithRetry(MovieBaseURL, 3*time.Second, 3)
 	})
 
 	if err != nil {
@@ -341,15 +331,10 @@ func (mc *MovieClient) GetMovieList(pathname string, page int) (*types.MovieList
 
 	fmt.Printf("Scraping movie list from URL: %s and page: %d\n", url, page)
 
-	var htmlContent string
+	htmlContent, err := mc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return mc.chromeClientStealth.NavigateWithRetry(url, 3*time.Second, 3)
+	})
 
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(mc.ChromeClient.ctx, actions...)
 	if err != nil {
 		logger.Logger.Error("Error loading movie list page", zap.Error(err))
 		return nil, err
@@ -423,7 +408,7 @@ func (mc *MovieClient) GetMovieDetail(pathname string) (*types.MovieDetail, erro
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
-	err := chromedp.Run(mc.ChromeClient.ctx, actions...)
+	err := chromedp.Run(mc.chromeClientStealth.GetContext(), actions...)
 	if err != nil {
 		logger.Logger.Error("Error loading movie detail page", zap.Error(err))
 		return nil, err
@@ -867,15 +852,9 @@ func (mc *MovieClient) Search(query string, page int) (*types.MovieListResponse,
 	fmt.Printf("Scraping search results for query: %s and page: %d\n", query, page)
 	fmt.Printf("Search URL: %s\n", url)
 
-	var htmlContent string
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(mc.ChromeClient.ctx, actions...)
+	htmlContent, err := mc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return mc.chromeClientStealth.NavigateWithRetry(url, 3*time.Second, 3)
+	})
 	if err != nil {
 		logger.Logger.Error("Error loading search page", zap.Error(err))
 		return nil, err
@@ -1339,7 +1318,7 @@ func (mc *MovieClient) FetchHTML(url string) (string, error) {
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
-	err := chromedp.Run(mc.ChromeClient.ctx, actions...)
+	err := chromedp.Run(mc.chromeClientStealth.GetContext(), actions...)
 	if err != nil {
 		return "", err
 	}

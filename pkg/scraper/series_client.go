@@ -22,36 +22,27 @@ import (
 )
 
 type SeriesClient struct {
-	ChromeClient *ChromeClient
-	HTTPClient   *http.Client
+	chromeClientStealth *ChromeClientStealth
+	hTTPClient          *http.Client
 }
 
 func NewSeriesClient() *SeriesClient {
 	return &SeriesClient{
-		ChromeClient: NewChromeClient(),
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+		chromeClientStealth: NewChromeClientStealth(),
+		hTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 func (sc *SeriesClient) Close() {
-	if sc.ChromeClient != nil {
-		sc.ChromeClient.Close()
+	if sc.chromeClientStealth != nil {
+		sc.chromeClientStealth.Close()
 	}
 }
 
 // GetHome scrapes the home page and returns categories with Key, Value, and ViewAllUrl
 func (sc *SeriesClient) GetHome() ([]types.HomeScrapperResponse, error) {
-	var htmlContent string
-	var err error
-
-	_, err = sc.ChromeClient.cb.Execute(func() (any, error) {
-		actions := []chromedp.Action{
-			chromedp.Navigate(SeriesBaseURL),
-			chromedp.Sleep(3 * time.Second),
-			chromedp.OuterHTML("html", &htmlContent),
-		}
-
-		return nil, chromedp.Run(sc.ChromeClient.ctx, actions...)
+	htmlContent, err := sc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return sc.chromeClientStealth.NavigateWithRetry(MovieBaseURL, 3*time.Second, 3)
 	})
 
 	if err != nil {
@@ -337,15 +328,9 @@ func (sc *SeriesClient) GetSeriesList(pathname string, page int) (*types.MovieLi
 
 	fmt.Printf("Scraping series list from URL: %s and page: %d\n", url, page)
 
-	var htmlContent string
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	htmlContent, err := sc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return sc.chromeClientStealth.NavigateWithRetry(url, 3*time.Second, 3)
+	})
 	if err != nil {
 		logger.Logger.Error("Error loading series list page", zap.Error(err))
 		return nil, err
@@ -410,7 +395,7 @@ func (sc *SeriesClient) GetSeriesDetail(pathname string) (*types.SeriesDetail, e
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	err := chromedp.Run(sc.chromeClientStealth.GetContext(), actions...)
 	if err != nil {
 		logger.Logger.Error("Error loading series detail page", zap.Error(err))
 		return nil, err
@@ -922,13 +907,9 @@ func (sc *SeriesClient) GetEpisode(pathname string) (*types.SeriesEpisode, error
 	cleanPathname := sc.makeCleanPathname(pathname)
 	initialURL := fmt.Sprintf("%s%s", SeriesBaseURL, cleanPathname)
 
-	actions := []chromedp.Action{
-		chromedp.Navigate(initialURL),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	htmlContent, err := sc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return sc.chromeClientStealth.NavigateWithRetry(initialURL, 3*time.Second, 3)
+	})
 	if err != nil {
 		logger.Logger.Error("Error loading episode page", zap.Error(err))
 		return nil, err
@@ -1128,15 +1109,9 @@ func (sc *SeriesClient) Search(query string, page int) (*types.MovieListResponse
 	fmt.Printf("Scraping search results for query: %s and page: %d\n", query, page)
 	fmt.Printf("Search URL: %s\n", url)
 
-	var htmlContent string
-
-	actions := []chromedp.Action{
-		chromedp.Navigate(url),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
-
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	htmlContent, err := sc.chromeClientStealth.cb.Execute(func() (string, error) {
+		return sc.chromeClientStealth.NavigateWithRetry(url, 3*time.Second, 3)
+	})
 	if err != nil {
 		logger.Logger.Error("Error loading search page", zap.Error(err))
 		return nil, err
@@ -1645,7 +1620,7 @@ func (sc *SeriesClient) FetchHTML(url string) (string, error) {
 		chromedp.OuterHTML("html", &htmlContent),
 	}
 
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
+	err := chromedp.Run(sc.chromeClientStealth.GetContext(), actions...)
 	if err != nil {
 		return "", err
 	}
