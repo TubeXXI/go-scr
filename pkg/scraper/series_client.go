@@ -1069,23 +1069,38 @@ func (sc *SeriesClient) scrapeEpisode(doc *goquery.Document) *types.SeriesEpisod
 	}
 
 	var playerPaginations []types.PlayerPagination
-	doc.Find("player-action ul.action-right li a").Each(func(i int, a *goquery.Selection) {
-		href, exists := a.Attr("href")
-		if !exists || href == "" {
-			return
-		}
+	items := doc.Find(".player-action .action-right li")
+	items.Each(func(i int, li *goquery.Selection) {
+		a := li.Find("a")
+		if a.Length() > 0 {
+			href, _ := a.Attr("href")
 
-		serverType := a.Find("i").Remove().Text()
-		if serverType == "" {
-			serverType = strings.TrimSpace(a.Text())
-		}
+			aClone := a.Clone()
+			aClone.Find("i").Remove()
+			linkText := strings.TrimSpace(aClone.Text())
 
-		playPaginate := types.PlayerPagination{
-			Name:    sc.stringPtr(strings.ToUpper(serverType)),
-			PageUrl: sc.stringPtr(sc.makeAbsoluteURL(href)),
-		}
+			episodeName := sc.parseEpisodeNumber(linkText, href)
 
-		playerPaginations = append(playerPaginations, playPaginate)
+			playPaginate := types.PlayerPagination{
+				Name:    sc.stringPtr(episodeName),
+				PageUrl: sc.stringPtr(sc.makeAbsoluteSlugURL(href)),
+			}
+			playerPaginations = append(playerPaginations, playPaginate)
+		} else {
+			liText := strings.TrimSpace(li.Text())
+
+			playPaginate := types.PlayerPagination{
+				Name:    sc.stringPtr(liText),
+				PageUrl: nil,
+			}
+			playerPaginations = append(playerPaginations, playPaginate)
+		}
+	})
+	sort.Slice(playerPaginations, func(i, j int) bool {
+		re := regexp.MustCompile(`(\d+)`)
+		numI := sc.extractNumber(*playerPaginations[i].Name, re)
+		numJ := sc.extractNumber(*playerPaginations[j].Name, re)
+		return numI < numJ
 	})
 
 	if len(playerPaginations) > 0 {
@@ -1433,6 +1448,19 @@ func (sc *SeriesClient) parseDuration(durationStr string) int {
 
 	return 0
 }
+func (sc *SeriesClient) parseEpisodeNumber(text, href string) string {
+	re := regexp.MustCompile(`EPS?\s*(\d+)`)
+	if matches := re.FindStringSubmatch(text); len(matches) > 1 {
+		return "Episode " + matches[1]
+	}
+
+	re = regexp.MustCompile(`episode-(\d+)`)
+	if matches := re.FindStringSubmatch(href); len(matches) > 1 {
+		return "Episode " + matches[1]
+	}
+
+	return text
+}
 func (sc *SeriesClient) makeAbsoluteURL(url string) string {
 	if url == "" {
 		return ""
@@ -1507,11 +1535,11 @@ func (sc *SeriesClient) getViewAllURL(s *goquery.Selection) *string {
 
 	return viewAllURL
 }
-func (mc *SeriesClient) makeCleanPathname(pathname string) string {
+func (sc *SeriesClient) makeCleanPathname(pathname string) string {
 	re := regexp.MustCompile(`^/+|/+$`)
 	return re.ReplaceAllString(pathname, "")
 }
-func (mc *SeriesClient) looksLikeMoviesPage(doc *goquery.Document) bool {
+func (sc *SeriesClient) looksLikeMoviesPage(doc *goquery.Document) bool {
 	if doc.Find("#player-select option").Length() > 0 {
 		return true
 	}
@@ -1521,7 +1549,7 @@ func (mc *SeriesClient) looksLikeMoviesPage(doc *goquery.Document) bool {
 
 	return false
 }
-func (mc *SeriesClient) isMoviesByFinalURL(url string) bool {
+func (sc *SeriesClient) isMoviesByFinalURL(url string) bool {
 	seriesPatterns := []string{
 		"lk21official",
 		"tv8.",
@@ -1535,7 +1563,7 @@ func (mc *SeriesClient) isMoviesByFinalURL(url string) bool {
 	}
 	return false
 }
-func (mc *SeriesClient) isValidURL(urlStr string) bool {
+func (sc *SeriesClient) isValidURL(urlStr string) bool {
 	if urlStr == "" {
 		return false
 	}
@@ -1555,7 +1583,7 @@ func (mc *SeriesClient) isValidURL(urlStr string) bool {
 
 	return true
 }
-func (mc *SeriesClient) clickIfExist(selector string, isXpath bool) chromedp.Action {
+func (sc *SeriesClient) clickIfExist(selector string, isXpath bool) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		var nodes []*cdp.Node
 		searchType := chromedp.ByQuery
@@ -1572,6 +1600,14 @@ func (mc *SeriesClient) clickIfExist(selector string, isXpath bool) chromedp.Act
 		}
 		return nil
 	})
+}
+func (sc *SeriesClient) extractNumber(s string, re *regexp.Regexp) int {
+	if matches := re.FindStringSubmatch(s); len(matches) > 1 {
+		if num, err := strconv.Atoi(matches[1]); err == nil {
+			return num
+		}
+	}
+	return 0
 }
 
 func (sc *SeriesClient) stringPtr(s string) *string {

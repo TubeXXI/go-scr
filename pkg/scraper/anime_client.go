@@ -16,7 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// AnimeClient handles anime scraping from OtakuDesu
 type AnimeClient struct {
 	ChromeClient *ChromeClient
 	HTTPClient   *http.Client
