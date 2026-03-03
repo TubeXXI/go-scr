@@ -133,15 +133,22 @@ func CloseLogger() {
 	defer loggerMu.Unlock()
 
 	if Logger != nil {
-		// Sync() penting untuk file writer, tapi bisa error di Windows
 		err := Logger.Sync()
 		if err != nil && !isHarmlessSyncError(err) {
-			// Log error ke stderr jika logger sudah tidak tersedia
 			fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
 		}
 	}
 }
 func isHarmlessSyncError(err error) bool {
-	return runtime.GOOS == "windows" &&
-		strings.Contains(err.Error(), "The handle is invalid")
+	if runtime.GOOS == "linux" &&
+		strings.Contains(err.Error(), "sync /dev/stdout: invalid argument") {
+		return true
+	}
+
+	if runtime.GOOS == "windows" &&
+		strings.Contains(err.Error(), "The handle is invalid") {
+		return true
+	}
+
+	return false
 }
