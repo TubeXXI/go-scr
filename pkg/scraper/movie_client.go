@@ -20,117 +20,26 @@ import (
 )
 
 type MovieClient struct {
-	ChromeClient     *ChromeClient
-	HTTPClient       *http.Client
-	currentProxy     *ProxyConfig
-	rotatePerRequest bool
+	ChromeClient *ChromeClient
+	HTTPClient   *http.Client
 }
 
 func NewMovieClient() *MovieClient {
-	chromeClient := NewChromeClient()
-
 	return &MovieClient{
-		ChromeClient:     chromeClient,
-		HTTPClient:       &http.Client{Timeout: 30 * time.Second},
-		currentProxy:     chromeClient.GetCurrentProxy(),
-		rotatePerRequest: true,
+		ChromeClient: NewChromeClient(),
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
-func NewMovieClientWithConfig(rotatePerRequest bool) *MovieClient {
-	chromeClient := NewChromeClient()
-
-	return &MovieClient{
-		ChromeClient:     chromeClient,
-		HTTPClient:       &http.Client{Timeout: 30 * time.Second},
-		currentProxy:     chromeClient.GetCurrentProxy(),
-		rotatePerRequest: rotatePerRequest,
-	}
-}
-
 func (mc *MovieClient) Close() {
 	if mc.ChromeClient != nil {
 		mc.ChromeClient.Close()
 	}
-}
-func (mc *MovieClient) RotateProxy() {
-	if mc.ChromeClient != nil {
-		mc.ChromeClient.RotateProxy()
-		mc.currentProxy = mc.ChromeClient.GetCurrentProxy()
-
-		mc.updateHTTPClientProxy()
-
-		logger.Logger.Debug("MovieClient proxy rotated",
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
-	}
-}
-func (mc *MovieClient) updateHTTPClientProxy() {
-	if mc.currentProxy != nil && mc.HTTPClient != nil {
-		if transport, ok := mc.HTTPClient.Transport.(*http.Transport); ok && transport != nil {
-			transport.Proxy = http.ProxyURL(mc.currentProxy.URL())
-		} else {
-			mc.HTTPClient.Transport = &http.Transport{
-				Proxy: http.ProxyURL(mc.currentProxy.URL()),
-			}
-		}
-	}
-}
-func (mc *MovieClient) isProxyError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errorMsg := err.Error()
-	proxyErrors := []string{
-		"proxy",
-		"timeout",
-		"connection refused",
-		"no route to host",
-		"network is unreachable",
-		"context deadline exceeded",
-	}
-
-	for _, proxyErr := range proxyErrors {
-		if strings.Contains(strings.ToLower(errorMsg), proxyErr) {
-			return true
-		}
-	}
-
-	return false
-}
-func (mc *MovieClient) SetRotatePerRequest(rotate bool) {
-	mc.rotatePerRequest = rotate
-}
-func (mc *MovieClient) GetCurrentProxy() *ProxyConfig {
-	return mc.currentProxy
-}
-func (mc *MovieClient) ExecuteWithProxy(fn func() error) error {
-	mc.RotateProxy()
-
-	err := fn()
-
-	if err != nil {
-		logger.Logger.Error("Function execution failed with proxy",
-			zap.Error(err),
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
-	} else {
-		logger.Logger.Debug("Function executed successfully with proxy",
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
-	}
-
-	return err
 }
 
 // GetHome scrapes the home page and returns categories with Key, Value, and ViewAllUrl
 func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 	var htmlContent string
 	var err error
-
-	if mc.rotatePerRequest {
-		mc.RotateProxy()
-	}
 
 	_, err = mc.ChromeClient.cb.Execute(func() (any, error) {
 		actions := []chromedp.Action{
@@ -139,26 +48,11 @@ func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 			chromedp.OuterHTML("html", &htmlContent),
 		}
 
-		err = chromedp.Run(mc.ChromeClient.ctx, actions...)
-		if err != nil {
-			if mc.isProxyError(err) && mc.rotatePerRequest {
-				logger.Logger.Warn("Proxy error detected, rotating...",
-					zap.Error(err),
-					zap.String("current_proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-				)
-				mc.RotateProxy()
-				err = chromedp.Run(mc.ChromeClient.ctx, actions...)
-			}
-		}
-
-		return nil, err
+		return nil, chromedp.Run(mc.ChromeClient.ctx, actions...)
 	})
 
 	if err != nil {
-		logger.Logger.Error("Error loading home page",
-			zap.Error(err),
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
+		logger.Logger.Error("Error loading home page", zap.Error(err))
 		return nil, err
 	}
 
@@ -167,49 +61,13 @@ func (mc *MovieClient) GetHome() ([]types.HomeScrapperResponse, error) {
 		logger.Logger.Error("Error parsing home HTML", zap.Error(err))
 		return nil, err
 	}
+	if doc == nil {
+		logger.Logger.Error("Error parsing series home HTML", zap.Error(err))
+		return nil, err
+	}
 
 	return mc.scrapeHome(doc), nil
 }
-func (mc *MovieClient) GetHomeWithRetry(maxRetries int) ([]types.HomeScrapperResponse, error) {
-	var result []types.HomeScrapperResponse
-	var lastErr error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		mc.RotateProxy()
-
-		logger.Logger.Info("Attempting to get home page",
-			zap.Int("attempt", attempt),
-			zap.Int("max_retries", maxRetries),
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
-
-		result, lastErr = mc.GetHome()
-		if lastErr == nil {
-			logger.Logger.Info("Successfully got home page",
-				zap.Int("attempt", attempt),
-				zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-			)
-			return result, nil
-		}
-
-		logger.Logger.Warn("Failed to get home page, retrying...",
-			zap.Int("attempt", attempt),
-			zap.Error(lastErr),
-			zap.String("proxy", maskProxyPassword(mc.currentProxy.HTTP)),
-		)
-
-		if attempt < maxRetries {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-		}
-	}
-
-	logger.Logger.Error("All retries failed for GetHome",
-		zap.Int("max_retries", maxRetries),
-		zap.Error(lastErr),
-	)
-	return nil, lastErr
-}
-
 func (mc *MovieClient) scrapeHome(doc *goquery.Document) []types.HomeScrapperResponse {
 	var results []types.HomeScrapperResponse
 

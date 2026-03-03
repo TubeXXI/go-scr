@@ -42,23 +42,29 @@ func (sc *SeriesClient) Close() {
 // GetHome scrapes the home page and returns categories with Key, Value, and ViewAllUrl
 func (sc *SeriesClient) GetHome() ([]types.HomeScrapperResponse, error) {
 	var htmlContent string
+	var err error
 
-	fmt.Printf("Scraper series home url: %s\n", SeriesBaseURL)
+	_, err = sc.ChromeClient.cb.Execute(func() (any, error) {
+		actions := []chromedp.Action{
+			chromedp.Navigate(SeriesBaseURL),
+			chromedp.Sleep(3 * time.Second),
+			chromedp.OuterHTML("html", &htmlContent),
+		}
 
-	actions := []chromedp.Action{
-		chromedp.Navigate(SeriesBaseURL),
-		chromedp.Sleep(3 * time.Second),
-		chromedp.OuterHTML("html", &htmlContent),
-	}
+		return nil, chromedp.Run(sc.ChromeClient.ctx, actions...)
+	})
 
-	err := chromedp.Run(sc.ChromeClient.ctx, actions...)
 	if err != nil {
-		logger.Logger.Error("Error loading series home page", zap.Error(err))
+		logger.Logger.Error("Error loading home page", zap.Error(err))
 		return nil, err
 	}
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
+		logger.Logger.Error("Error parsing series home HTML", zap.Error(err))
+		return nil, err
+	}
+	if doc == nil {
 		logger.Logger.Error("Error parsing series home HTML", zap.Error(err))
 		return nil, err
 	}
