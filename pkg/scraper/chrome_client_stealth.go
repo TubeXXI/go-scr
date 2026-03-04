@@ -24,35 +24,23 @@ const (
 )
 
 type ChromeClientStealth struct {
-	ctx         context.Context
-	httpClient  *http.Client
-	cb          *gobreaker.CircuitBreaker[string]
-	cancel      context.CancelFunc
-	useProxy    bool
-	proxyConfig *ProxyConfig
+	ctx          context.Context
+	httpClient   *http.Client
+	cb           *gobreaker.CircuitBreaker[string]
+	cancel       context.CancelFunc
+	useProxy     bool
+	proxyRotator *ProxyRotator
 }
 
 func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
-	var proxyConfig *ProxyConfig
+	var proxyRotator *ProxyRotator
 	var proxyURL string
 
 	if useProxy {
-		proxyConfig = GetHTTPProxy()
-		if proxyConfig != nil {
-			proxyURL = proxyConfig.Server
-			logger.Logger.Info("Using proxy for Chrome",
-				zap.String("proxy", maskProxyPassword(proxyURL)),
-				zap.String("username", proxyConfig.Username),
-			)
-		}
-	}
+		proxyRotator = GetProxyRotator()
+		proxyRotator.TestAllProxies()
 
-	if proxyConfig != nil {
-		if err := TestProxyAuth(proxyConfig); err != nil {
-			logger.Logger.Warn("Proxy test failed, will retry...", zap.Error(err))
-			proxyConfig = GetHTTPProxy()
-			proxyURL = proxyConfig.Server
-		}
+		logger.Logger.Info("Using proxy rotator for Chrome")
 	}
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -103,11 +91,9 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 
 	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
 
-	ctx, cancel := context.WithCancel(allocCtx)
+	ctx, cancel := context.WithTimeout(allocCtx, 120*time.Second)
 
-	if proxyConfig != nil {
-		ctx = SetupProxyAuth(ctx, proxyConfig)
-	}
+	ctx, _ = chromedp.NewContext(ctx)
 
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -148,16 +134,12 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 	})
 
 	client := &ChromeClientStealth{
-		ctx:         ctx,
-		httpClient:  httpClient,
-		cb:          cb,
-		cancel:      cancel,
-		useProxy:    useProxy,
-		proxyConfig: proxyConfig,
-	}
-
-	if err := client.testConnection(); err != nil {
-		logger.Logger.Warn("Initial connection test failed", zap.Error(err))
+		ctx:          ctx,
+		httpClient:   httpClient,
+		cb:           cb,
+		cancel:       cancel,
+		useProxy:     useProxy,
+		proxyRotator: proxyRotator,
 	}
 
 	return client
@@ -206,12 +188,14 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 	var lastErr error
 
 	for i := 0; i < maxRetries; i++ {
-		ctx, cancel := context.WithTimeout(cc.ctx, 60*time.Second)
+		ctx, cancel := context.WithTimeout(cc.ctx, 90*time.Second)
 
 		var tasks chromedp.Tasks
-
 		tasks = append(tasks,
-			chromedp.Evaluate(stealth.JS, nil),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				logger.Logger.Debug("Running stealth JS")
+				return chromedp.Evaluate(stealth.JS, nil).Do(ctx)
+			}),
 			chromedp.Navigate(targetURL),
 			chromedp.Sleep(waitTime),
 			chromedp.OuterHTML("html", &htmlContent),
@@ -233,15 +217,9 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 				zap.Int("retry", i+1),
 			)
 
-			if strings.Contains(err.Error(), "ERR_INVALID_AUTH_CREDENTIALS") ||
-				strings.Contains(err.Error(), "ERR_PROXY_AUTH_REQUESTED") ||
-				strings.Contains(err.Error(), "ERR_PROXY_CONNECTION_FAILED") {
-
-				logger.Logger.Warn("Proxy error, rotating...")
-				if cc.useProxy {
-					cc.proxyConfig = GetHTTPProxy()
-					cc.ctx = SetupProxyAuth(cc.ctx, cc.proxyConfig)
-				}
+			if strings.Contains(err.Error(), "context canceled") {
+				logger.Logger.Info("Recreating Chrome context...")
+				cc.recreateContext()
 			}
 
 			time.Sleep(time.Duration(2+i) * time.Second)
@@ -262,6 +240,23 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 	}
 
 	return "", fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func (cc *ChromeClientStealth) recreateContext() {
+	cc.cancel()
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", "new"),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-gpu", true),
+	)
+
+	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, cancel := context.WithTimeout(allocCtx, 120*time.Second)
+	ctx, _ = chromedp.NewContext(ctx)
+
+	cc.ctx = ctx
+	cc.cancel = cancel
 }
 
 func (cc *ChromeClientStealth) ExecuteScript(script string, result interface{}) error {

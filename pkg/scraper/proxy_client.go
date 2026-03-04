@@ -3,9 +3,13 @@ package scraper
 import (
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
+	"tubexxi/scraper/pkg/logger"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -15,14 +19,14 @@ const (
 )
 
 var (
-	httpPorts  = []int{3129}
-	socksPorts = []int{1080}
-
-	httpPortIndex  = 0
-	socksPortIndex = 0
-	portsMutex     = &sync.Mutex{}
-
-	rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	httpPorts       = []int{3129}
+	socksPorts      = []int{1080}
+	httpPortIndex   = 0
+	socksPortIndex  = 0
+	portsMutex      = &sync.Mutex{}
+	rng             = rand.New(rand.NewSource(time.Now().UnixNano()))
+	rotatorInstance *ProxyRotator
+	rotatorOnce     sync.Once
 )
 
 type ProxyConfig struct {
@@ -32,6 +36,13 @@ type ProxyConfig struct {
 	Host     string
 	Port     int
 	Scheme   string
+}
+
+type ProxyRotator struct {
+	proxies     []*ProxyConfig
+	current     int
+	mu          sync.Mutex
+	httpClients map[string]*http.Client
 }
 
 func maskProxyPassword(proxyStr string) string {
@@ -106,4 +117,89 @@ func getNextSOCKSPort() int {
 	port := socksPorts[socksPortIndex]
 	socksPortIndex = (socksPortIndex + 1) % len(socksPorts)
 	return port
+}
+
+// Proxy Rotator
+
+func GetProxyRotator() *ProxyRotator {
+	rotatorOnce.Do(func() {
+		proxies := []*ProxyConfig{
+			{
+				Server:   fmt.Sprintf("http://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, 3129),
+				Username: XUI_USERNAME,
+				Password: XUI_PASSWORD,
+				Host:     XUI_HOST,
+				Port:     3129,
+				Scheme:   "http",
+			},
+		}
+
+		rotatorInstance = &ProxyRotator{
+			proxies:     proxies,
+			current:     0,
+			httpClients: make(map[string]*http.Client),
+		}
+	})
+	return rotatorInstance
+}
+func (pr *ProxyRotator) GetNextProxy() *ProxyConfig {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
+	proxy := pr.proxies[pr.current]
+	pr.current = (pr.current + 1) % len(pr.proxies)
+	return proxy
+}
+func (pr *ProxyRotator) GetHTTPClient() *http.Client {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+
+	proxy := pr.proxies[pr.current]
+	key := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
+
+	if client, exists := pr.httpClients[key]; exists {
+		return client
+	}
+
+	proxyURL, _ := url.Parse(proxy.Server)
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
+
+	pr.httpClients[key] = client
+	return client
+}
+func (pr *ProxyRotator) TestAllProxies() {
+	for _, proxy := range pr.proxies {
+		client := &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(mustParse(proxy.Server)),
+			},
+			Timeout: 10 * time.Second,
+		}
+
+		resp, err := client.Get("http://httpbin.org/ip")
+		if err != nil {
+			logger.Logger.Warn("Proxy test failed",
+				zap.String("proxy", proxy.Server),
+				zap.Error(err),
+			)
+		} else {
+			resp.Body.Close()
+			logger.Logger.Info("Proxy test successful",
+				zap.String("proxy", proxy.Server),
+				zap.Int("status", resp.StatusCode),
+			)
+		}
+	}
+}
+
+func mustParse(s string) *url.URL {
+	u, _ := url.Parse(s)
+	return u
 }
