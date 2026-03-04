@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math/rand"
 	"net"
@@ -36,8 +37,25 @@ type ChromeClientStealth struct {
 
 func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 	var proxyConfig *ProxyConfig
+	var proxyServer string
+
 	if useProxy {
 		proxyConfig = GetHTTPProxyOnly()
+		if proxyConfig != nil {
+			proxyServer = proxyConfig.Server
+			logger.Logger.Info("Using proxy for Chrome",
+				zap.String("proxy", proxyServer),
+				zap.String("username", proxyConfig.Username),
+			)
+		}
+	}
+
+	if proxyConfig != nil {
+		if err := TestProxyAuth(proxyConfig); err != nil {
+			logger.Logger.Warn("Proxy test failed, but continuing...",
+				zap.Error(err),
+			)
+		}
 	}
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -80,12 +98,12 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 		chromedp.Flag("ignore-certificate-errors", true),
 	)
 
-	if useProxy && proxyConfig != nil {
-		proxyURL, err := url.Parse(proxyConfig.Server)
+	if proxyServer != "" {
+		u, err := url.Parse(proxyServer)
 		if err == nil {
-			opts = append(opts, chromedp.ProxyServer(proxyURL.Host))
-			logger.Logger.Info("Using HTTP proxy for Chrome",
-				zap.String("proxy_host", proxyURL.Host),
+			opts = append(opts, chromedp.ProxyServer(u.Host))
+			logger.Logger.Info("Chrome proxy configured",
+				zap.String("proxy_host", u.Host),
 			)
 		}
 	}
@@ -93,43 +111,14 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
 
-	if useProxy && proxyConfig != nil {
-		chromedp.ListenTarget(ctx, func(ev interface{}) {
-			if auth, ok := ev.(*fetch.EventAuthRequired); ok {
-				go func() {
-					err := chromedp.Run(ctx, fetch.ContinueWithAuth(auth.RequestID, &fetch.AuthChallengeResponse{
-						Response: "ProvideCredentials",
-						Username: proxyConfig.Username,
-						Password: proxyConfig.Password,
-					}))
-					if err != nil {
-						logger.Logger.Error("Proxy Auth Failed", zap.Error(err))
-					}
-				}()
-			}
-		})
-	}
-
-	if useProxy && proxyConfig != nil && proxyConfig.Username != "" {
-		chromedp.ListenTarget(ctx, func(ev interface{}) {
-			if auth, ok := ev.(*fetch.EventAuthRequired); ok {
-				go func() {
-					logger.Logger.Info("Proxy authentication required",
-						zap.String("username", proxyConfig.Username),
-					)
-					err := chromedp.Run(ctx, fetch.ContinueWithAuth(auth.RequestID, &fetch.AuthChallengeResponse{
-						Response: "ProvideCredentials",
-						Username: proxyConfig.Username,
-						Password: proxyConfig.Password,
-					}))
-					if err != nil {
-						logger.Logger.Error("Proxy auth failed", zap.Error(err))
-					} else {
-						logger.Logger.Info("Proxy authentication successful")
-					}
-				}()
-			}
-		})
+	if proxyConfig != nil {
+		var err error
+		ctx, err = SetupProxyWithAuth(ctx, proxyConfig)
+		if err != nil {
+			logger.Logger.Error("Failed to setup proxy auth",
+				zap.Error(err),
+			)
+		}
 	}
 
 	transport := &http.Transport{
@@ -278,18 +267,14 @@ func (cc *ChromeClientStealth) GetContext() context.Context {
 	return cc.ctx
 }
 
-// NavigateWithRetry navigates to a URL with retry logic for Cloudflare
 func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time.Duration, maxRetries int) (string, error) {
 	var htmlContent string
-	var err error
+	var lastErr error
 
 	for i := 0; i < maxRetries; i++ {
 		ctx, cancel := context.WithTimeout(cc.ctx, 60*time.Second)
 
 		var tasks chromedp.Tasks
-		if cc.useProxy {
-			tasks = append(tasks, fetch.Enable())
-		}
 
 		tasks = append(tasks,
 			chromedp.Evaluate(stealth.JS, nil),
@@ -304,7 +289,21 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 		cancel()
 
 		if err != nil {
+			lastErr = err
 			logger.Logger.Warn("Navigation failed", zap.Error(err), zap.Int("retry", i+1))
+
+			if strings.Contains(err.Error(), "ERR_INVALID_AUTH_CREDENTIALS") {
+				logger.Logger.Error("Invalid proxy credentials",
+					zap.String("username", cc.proxyConfig.Username),
+				)
+				if cc.useProxy {
+					cc.proxyConfig = GetHTTPProxyOnly()
+					logger.Logger.Info("Proxy rotated",
+						zap.String("new_proxy", cc.proxyConfig.Server),
+					)
+				}
+			}
+
 			time.Sleep(time.Duration(2+i) * time.Second)
 			continue
 		}
@@ -320,10 +319,9 @@ func (cc *ChromeClientStealth) NavigateWithRetry(targetURL string, waitTime time
 		return htmlContent, nil
 	}
 
-	return "", fmt.Errorf("failed after %d retries: %w", maxRetries, err)
+	return "", fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
-// ExecuteScript executes JavaScript and returns the result
 func (cc *ChromeClientStealth) ExecuteScript(script string, result interface{}) error {
 	err := chromedp.Run(cc.ctx,
 		chromedp.Evaluate(script, result),
@@ -331,7 +329,6 @@ func (cc *ChromeClientStealth) ExecuteScript(script string, result interface{}) 
 	return err
 }
 
-// WaitForElement waits for a specific element to appear
 func (cc *ChromeClientStealth) WaitForElement(selector string, waitTime time.Duration) error {
 	ctx, cancel := context.WithTimeout(cc.ctx, waitTime)
 	defer cancel()
@@ -342,7 +339,6 @@ func (cc *ChromeClientStealth) WaitForElement(selector string, waitTime time.Dur
 	return err
 }
 
-// SetExtraHeaders sets extra HTTP headers for the request
 func (cc *ChromeClientStealth) SetExtraHeaders(headers map[string]string) error {
 	headerMap := make(network.Headers)
 	for k, v := range headers {
@@ -366,4 +362,132 @@ func randomUserAgent() string {
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	return userAgents[rng.Intn(len(userAgents))]
+}
+
+func SetupProxyWithAuth(ctx context.Context, proxyConfig *ProxyConfig) (context.Context, error) {
+	if proxyConfig == nil || proxyConfig.Server == "" {
+		return ctx, nil
+	}
+
+	proxyURL, err := url.Parse(proxyConfig.Server)
+	if err != nil {
+		return ctx, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	if err := chromedp.Run(ctx,
+		fetch.Enable(),
+	); err != nil {
+		logger.Logger.Warn("Failed to enable fetch", zap.Error(err))
+	}
+
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		switch e := ev.(type) {
+		case *fetch.EventAuthRequired:
+			handleAuthRequired(ctx, e, proxyConfig)
+		case *fetch.EventRequestPaused:
+			handleRequestPaused(ctx, e)
+		}
+	})
+
+	headers := network.Headers{
+		"Proxy-Authorization": basicAuth(proxyConfig.Username, proxyConfig.Password),
+	}
+
+	if err := chromedp.Run(ctx,
+		network.SetExtraHTTPHeaders(headers),
+	); err != nil {
+		logger.Logger.Warn("Failed to set extra headers", zap.Error(err))
+	}
+
+	logger.Logger.Info("Proxy auth setup completed",
+		zap.String("proxy", proxyURL.Host),
+		zap.String("username", proxyConfig.Username),
+	)
+
+	return ctx, nil
+}
+
+func handleAuthRequired(ctx context.Context, event *fetch.EventAuthRequired, proxyConfig *ProxyConfig) {
+	logger.Logger.Info("Proxy authentication required",
+		zap.String("url", event.Request.URL),
+	)
+
+	response := &fetch.AuthChallengeResponse{
+		Response: "ProvideCredentials",
+		Username: proxyConfig.Username,
+		Password: proxyConfig.Password,
+	}
+
+	go func() {
+		authCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		if err := chromedp.Run(authCtx,
+			fetch.ContinueWithAuth(event.RequestID, response),
+		); err != nil {
+			logger.Logger.Error("Failed to provide proxy auth",
+				zap.Error(err),
+				zap.String("username", proxyConfig.Username),
+			)
+		} else {
+			logger.Logger.Info("Proxy authentication provided successfully")
+		}
+	}()
+}
+
+func handleRequestPaused(ctx context.Context, event *fetch.EventRequestPaused) {
+	go func() {
+		pauseCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		if err := chromedp.Run(pauseCtx,
+			fetch.ContinueRequest(event.RequestID),
+		); err != nil {
+			logger.Logger.Debug("Failed to continue request",
+				zap.Error(err),
+				zap.String("url", event.Request.URL),
+			)
+		}
+	}()
+}
+
+func basicAuth(username, password string) string {
+	auth := username + ":" + password
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+}
+func TestProxyAuth(proxyConfig *ProxyConfig) error {
+	if proxyConfig == nil {
+		return fmt.Errorf("proxy config is nil")
+	}
+
+	proxyURL, err := url.Parse(proxyConfig.Server)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Second,
+	}
+
+	resp, err := client.Get("http://httpbin.org/ip")
+	if err != nil {
+		return fmt.Errorf("proxy connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("proxy returned status: %s", resp.Status)
+	}
+
+	logger.Logger.Info("Proxy test successful",
+		zap.String("proxy", proxyURL.Host),
+		zap.Int("status", resp.StatusCode),
+	)
+
+	return nil
 }

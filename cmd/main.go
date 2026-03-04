@@ -20,6 +20,7 @@ const (
 	MovieScraper  = "Movie Scraper"
 	SeriesScraper = "Series Scraper"
 	AnimeScraper  = "Anime Scraper"
+	TestProxy     = "Test Proxy"
 	ClearResults  = "Clear Results"
 	Exit          = "Exit"
 
@@ -64,6 +65,8 @@ func main() {
 		runSeriesScraper(method)
 	// case AnimeScraper:
 	// 	method = selectAnimeMethod()
+	case TestProxy:
+		testProxy()
 	case ClearResults:
 		fmt.Println("Clearing results directory...")
 		resultsDir := "results"
@@ -104,6 +107,7 @@ func selectScraper() string {
 			MovieScraper,
 			SeriesScraper,
 			AnimeScraper,
+			TestProxy,
 			ClearResults,
 			Exit,
 		},
@@ -750,4 +754,23 @@ func saveToFile(path string, info interface{}) error {
 	fmt.Printf("Data saved to %s\n", path)
 
 	return nil
+}
+
+func testProxy() {
+	proxyConfig := scraper.GetHTTPProxyOnly()
+	if proxyConfig != nil {
+		logger.Logger.Info("Testing proxy connection...",
+			zap.String("proxy", proxyConfig.Server),
+			zap.String("username", proxyConfig.Username),
+		)
+
+		err := scraper.TestProxyAuth(proxyConfig)
+		if err != nil {
+			logger.Logger.Error("Proxy test failed",
+				zap.Error(err),
+			)
+		} else {
+			logger.Logger.Info("Proxy test successful")
+		}
+	}
 }
