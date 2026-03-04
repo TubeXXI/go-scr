@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	XUI_HOST     = "localhost"
+	XUI_HOST     = "localhost" // change infrastructure-3proxy for prod
 	XUI_USERNAME = "infrastructure-admin"
 	XUI_PASSWORD = "NX5hJ3nLRAZ8qRjTsx1VUsIDbchBZ0zG"
 )
@@ -26,9 +26,12 @@ var (
 )
 
 type ProxyConfig struct {
-	Server   string // Contoh: "socks5://174.138.75.37:1080"
+	Server   string // Dengan auth: http://user:pass@host:port
 	Username string
 	Password string
+	Host     string
+	Port     int
+	Scheme   string
 }
 
 func maskProxyPassword(proxyStr string) string {
@@ -49,33 +52,44 @@ func GetProxyRotating() *ProxyConfig {
 	proxyTypes := []string{"http", "socks"}
 	chosenType := proxyTypes[rng.Intn(len(proxyTypes))]
 
-	var server string
-	var port int
-
 	if chosenType == "http" {
-		port = getNextHTTPPort()
-		server = fmt.Sprintf("http://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
-	} else {
-		port = getNextSOCKSPort()
-		server = fmt.Sprintf("socks5://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
+		return GetHTTPProxy()
 	}
-
-	return &ProxyConfig{
-		Server:   server,
-		Username: XUI_USERNAME,
-		Password: XUI_PASSWORD,
-	}
+	return GetSOCKSProxy()
 }
-func GetHTTPProxyOnly() *ProxyConfig {
+
+func GetHTTPProxy() *ProxyConfig {
 	port := getNextHTTPPort()
-	server := fmt.Sprintf("http://%s:%d", XUI_HOST, port)
+	server := fmt.Sprintf("http://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
 
 	return &ProxyConfig{
 		Server:   server,
 		Username: XUI_USERNAME,
 		Password: XUI_PASSWORD,
+		Host:     XUI_HOST,
+		Port:     port,
+		Scheme:   "http",
 	}
 }
+
+func GetSOCKSProxy() *ProxyConfig {
+	port := getNextSOCKSPort()
+	server := fmt.Sprintf("socks5://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
+
+	return &ProxyConfig{
+		Server:   server,
+		Username: XUI_USERNAME,
+		Password: XUI_PASSWORD,
+		Host:     XUI_HOST,
+		Port:     port,
+		Scheme:   "socks5",
+	}
+}
+
+func GetHTTPProxyOnly() *ProxyConfig {
+	return GetHTTPProxy()
+}
+
 func getNextHTTPPort() int {
 	portsMutex.Lock()
 	defer portsMutex.Unlock()
@@ -84,6 +98,7 @@ func getNextHTTPPort() int {
 	httpPortIndex = (httpPortIndex + 1) % len(httpPorts)
 	return port
 }
+
 func getNextSOCKSPort() int {
 	portsMutex.Lock()
 	defer portsMutex.Unlock()
