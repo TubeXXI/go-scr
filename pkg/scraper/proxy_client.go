@@ -9,14 +9,14 @@ import (
 )
 
 const (
-	XUI_HOST     = "x-ui.agcforge.com/"
-	XUI_USERNAME = "tubexxi"
-	XUI_PASSWORD = "ngfbMybEOf"
+	XUI_HOST     = "localhost"
+	XUI_USERNAME = "infrastructure-admin"
+	XUI_PASSWORD = "NX5hJ3nLRAZ8qRjTsx1VUsIDbchBZ0zG"
 )
 
 var (
-	httpPorts  = []int{8080, 8081, 8082}
-	socksPorts = []int{1080, 1081, 1082}
+	httpPorts  = []int{3129}
+	socksPorts = []int{1080}
 
 	httpPortIndex  = 0
 	socksPortIndex = 0
