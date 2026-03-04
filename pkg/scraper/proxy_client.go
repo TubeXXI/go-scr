@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	XUI_HOST     = "103.215.72.169"
+	XUI_HOST     = "localhost"
 	XUI_USERNAME = "infrastructure-admin"
 	XUI_PASSWORD = "NX5hJ3nLRAZ8qRjTsx1VUsIDbchBZ0zG"
 )
@@ -44,6 +44,7 @@ func maskProxyPassword(proxyStr string) string {
 	}
 	return proxyStr
 }
+
 func GetProxyRotating() *ProxyConfig {
 	proxyTypes := []string{"http", "socks"}
 	chosenType := proxyTypes[rng.Intn(len(proxyTypes))]
@@ -53,11 +54,21 @@ func GetProxyRotating() *ProxyConfig {
 
 	if chosenType == "http" {
 		port = getNextHTTPPort()
-		server = fmt.Sprintf("http://%s:%d", XUI_HOST, port)
+		server = fmt.Sprintf("http://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
 	} else {
 		port = getNextSOCKSPort()
-		server = fmt.Sprintf("socks5://%s:%d", XUI_HOST, port)
+		server = fmt.Sprintf("socks5://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
 	}
+
+	return &ProxyConfig{
+		Server:   server,
+		Username: XUI_USERNAME,
+		Password: XUI_PASSWORD,
+	}
+}
+func GetHTTPProxyOnly() *ProxyConfig {
+	port := getNextHTTPPort()
+	server := fmt.Sprintf("http://%s:%d", XUI_HOST, port)
 
 	return &ProxyConfig{
 		Server:   server,

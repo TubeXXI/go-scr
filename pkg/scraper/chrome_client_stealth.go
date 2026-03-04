@@ -37,13 +37,7 @@ type ChromeClientStealth struct {
 func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 	var proxyConfig *ProxyConfig
 	if useProxy {
-		proxyConfig = GetProxyRotating()
-	}
-
-	var proxyURL string
-	if proxyConfig != nil {
-		proxyURL = proxyConfig.Server
-		logger.Logger.Info("Using rotating proxy", zap.String("proxy", maskProxyPassword(proxyURL)))
+		proxyConfig = GetHTTPProxyOnly()
 	}
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -86,8 +80,14 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 		chromedp.Flag("ignore-certificate-errors", true),
 	)
 
-	if proxyURL != "" {
-		opts = append(opts, chromedp.ProxyServer(proxyURL))
+	if useProxy && proxyConfig != nil {
+		proxyURL, err := url.Parse(proxyConfig.Server)
+		if err == nil {
+			opts = append(opts, chromedp.ProxyServer(proxyURL.Host))
+			logger.Logger.Info("Using HTTP proxy for Chrome",
+				zap.String("proxy_host", proxyURL.Host),
+			)
+		}
 	}
 
 	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
@@ -104,6 +104,28 @@ func NewChromeClientStealth(useProxy bool) *ChromeClientStealth {
 					}))
 					if err != nil {
 						logger.Logger.Error("Proxy Auth Failed", zap.Error(err))
+					}
+				}()
+			}
+		})
+	}
+
+	if useProxy && proxyConfig != nil && proxyConfig.Username != "" {
+		chromedp.ListenTarget(ctx, func(ev interface{}) {
+			if auth, ok := ev.(*fetch.EventAuthRequired); ok {
+				go func() {
+					logger.Logger.Info("Proxy authentication required",
+						zap.String("username", proxyConfig.Username),
+					)
+					err := chromedp.Run(ctx, fetch.ContinueWithAuth(auth.RequestID, &fetch.AuthChallengeResponse{
+						Response: "ProvideCredentials",
+						Username: proxyConfig.Username,
+						Password: proxyConfig.Password,
+					}))
+					if err != nil {
+						logger.Logger.Error("Proxy auth failed", zap.Error(err))
+					} else {
+						logger.Logger.Info("Proxy authentication successful")
 					}
 				}()
 			}
