@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	XUI_HOST     = "localhost"
+	XUI_HOST     = "127.0.0.1"
 	XUI_USERNAME = "infrastructure-admin"
 	XUI_PASSWORD = "NX5hJ3nLRAZ8qRjTsx1VUsIDbchBZ0zG"
 )
@@ -53,10 +53,10 @@ func GetProxyRotating() *ProxyConfig {
 
 	if chosenType == "http" {
 		port = getNextHTTPPort()
-		server = fmt.Sprintf("http://%s:%d", XUI_HOST, port)
+		server = fmt.Sprintf("http://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
 	} else {
 		port = getNextSOCKSPort()
-		server = fmt.Sprintf("socks5://%s:%d", XUI_HOST, port)
+		server = fmt.Sprintf("socks5://%s:%s@%s:%d", XUI_USERNAME, XUI_PASSWORD, XUI_HOST, port)
 	}
 
 	return &ProxyConfig{
