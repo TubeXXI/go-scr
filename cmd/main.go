@@ -63,8 +63,9 @@ func main() {
 	case SeriesScraper:
 		method = selectSeriesMethod()
 		runSeriesScraper(method)
-	// case AnimeScraper:
-	// 	method = selectAnimeMethod()
+	case AnimeScraper:
+		method = selectAnimeMethod()
+		runAnimeScraper(method)
 	case TestProxy:
 		testProxy()
 	case ClearResults:
@@ -184,11 +185,10 @@ func selectAnimeMethod() string {
 	methodPrompt := &survey.Select{
 		Message: "🎯 Select anime scraping method",
 		Options: []string{
-			Home,
 			Latest,
-			Search,
 			Ongoing,
 			Completed,
+			Search,
 			GenreList,
 			Genre,
 			Detail,
@@ -724,6 +724,178 @@ func runSeriesScraper(method string) {
 			fullPath := filepath.Join(resultDir, filename)
 			if err := saveToFile(fullPath, data); err != nil {
 				logger.Logger.Error("Error saving series episode detail", zap.Error(err))
+			}
+		}
+	default:
+		logger.Logger.Info("Method not implemented yet", zap.String("method", method))
+	}
+}
+func runAnimeScraper(method string) {
+	client := scraper.NewAnimeClient(true)
+	defer client.Close()
+
+	resultDir := "../results/anime"
+	err := utils.EnsureDir(resultDir)
+	if err != nil {
+		logger.Logger.Fatal("Error creating results directory", zap.Error(err))
+	}
+
+	fmt.Printf("Running anime scraper with method: %s\n", method)
+
+	switch method {
+	case Latest:
+		fmt.Println("Scraping anime by latest...")
+		currentPage := 1
+
+		data, err := client.GetLatest(currentPage)
+
+		if err != nil {
+			logger.Logger.Error("Error getting anime latest data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("latest_%d.json", currentPage)
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving anime latest data", zap.Error(err))
+			}
+		}
+	case Ongoing:
+		fmt.Println("Scraping anime by ongoing...")
+		currentPage := 1
+
+		data, err := client.GetOngoing(currentPage)
+
+		if err != nil {
+			logger.Logger.Error("Error getting anime ongoing data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("ongoing_%d.json", currentPage)
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving anime ongoing data", zap.Error(err))
+			}
+		}
+	case Completed:
+		fmt.Println("Scraping anime by complete...")
+		currentPage := 1
+
+		data, err := client.GetComplete(currentPage)
+
+		if err != nil {
+			logger.Logger.Error("Error getting anime complete data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("complete_%d.json", currentPage)
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving anime complete data", zap.Error(err))
+			}
+		}
+	case Search:
+		queryProimpt := &survey.Input{
+			Message: "Enter search query: eg. 'naruto'",
+			Default: "naruto",
+		}
+
+		query := ""
+		if err := survey.AskOne(queryProimpt, &query); err != nil {
+			logger.Logger.Fatal("Error getting search query", zap.Error(err))
+		}
+
+		fmt.Println("Scraping by search...")
+		currentPage := 1
+
+		data, err := client.Search(query, currentPage)
+
+		if err != nil {
+			logger.Logger.Error("Error getting search data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("search_%s_%d.json", query, currentPage)
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving search data", zap.Error(err))
+			}
+		}
+	case GenreList:
+		fmt.Println("Scraping anime genre list...")
+
+		data, err := client.GetGenres()
+
+		if err != nil {
+			logger.Logger.Error("Error getting anime genre list data", zap.Error(err))
+		} else if data != nil {
+			filename := "genre_list.json"
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving anime genre list data", zap.Error(err))
+			}
+		}
+	case Genre:
+		queryProimpt := &survey.Input{
+			Message: "Enter genre name: eg. 'adventure'",
+			Default: "adventure",
+		}
+
+		name := ""
+		if err := survey.AskOne(queryProimpt, &name); err != nil {
+			logger.Logger.Fatal("Error getting genre name", zap.Error(err))
+		}
+
+		fmt.Println("Scraping by genre...")
+		currentPage := 1
+
+		data, err := client.GetByGenre(name, currentPage)
+
+		if err != nil {
+			logger.Logger.Error("Error getting genre data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("genre_%s_%d.json", name, currentPage)
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving genre data", zap.Error(err))
+			}
+		}
+	case Detail:
+		pathPrompt := &survey.Input{
+			Message: "Enter anime path (e.g., /1piece-sub-indo):",
+			Default: "/1piece-sub-indo",
+		}
+		path := ""
+		if err := survey.AskOne(pathPrompt, &path); err != nil {
+			logger.Logger.Fatal("Error getting anime path input", zap.Error(err))
+		}
+
+		fmt.Println("Scraping anime detail...")
+
+		data, err := client.GetAnimeDetail(path)
+
+		if err != nil {
+			logger.Logger.Error("Error getting anime detail data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("detail_%s.json", strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "-", "_"))
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving anime detail data", zap.Error(err))
+			}
+		}
+	case Episode:
+		pathPrompt := &survey.Input{
+			Message: "Enter episode path (e.g., /wpoiec-episode-11-sub-indo):",
+			Default: "/wpoiec-episode-11-sub-indo",
+		}
+		path := ""
+		if err := survey.AskOne(pathPrompt, &path); err != nil {
+			logger.Logger.Fatal("Error getting episode path input", zap.Error(err))
+		}
+
+		fmt.Println("Scraping episode detail...")
+
+		data, err := client.GetAnimeEpisode(path)
+
+		if err != nil {
+			logger.Logger.Error("Error getting episode detail data", zap.Error(err))
+		} else if data != nil {
+			filename := fmt.Sprintf("episode_%s.json", strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), "-", "_"))
+			fullPath := filepath.Join(resultDir, filename)
+			if err := saveToFile(fullPath, data); err != nil {
+				logger.Logger.Error("Error saving episode detail data", zap.Error(err))
 			}
 		}
 	default:

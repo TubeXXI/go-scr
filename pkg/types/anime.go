@@ -1,6 +1,6 @@
 package types
 
-import "github.com/gofrs/uuid"
+import "github.com/google/uuid"
 
 type Anime struct {
 	ID              uuid.UUID     `json:"id" validate:"required,uuid"`
@@ -8,6 +8,7 @@ type Anime struct {
 	TitleJapanese   *string       `json:"title_japanese" validate:"omitempty"`
 	OriginalPageURL *string       `json:"original_page_url" validate:"omitempty"`
 	Thumbnail       *string       `json:"thumbnail" validate:"omitempty"`
+	Description     *string       `json:"description" validate:"omitempty"`
 	Score           *string       `json:"score" validate:"omitempty"`
 	Producer        *string       `json:"producer" validate:"omitempty"`
 	Type            *string       `json:"type" validate:"omitempty"`
@@ -20,6 +21,7 @@ type Anime struct {
 	Rating          *string       `json:"rating" validate:"omitempty"`
 	Genre           *[]AnimeGenre `json:"genre" validate:"omitempty"`
 	Episodes        *[]Episode    `json:"episodes" validate:"omitempty"`
+	SimilarAnime    *[]Anime      `json:"similar_anime" validate:"omitempty"`
 }
 
 type AnimeGenre struct {
@@ -28,19 +30,20 @@ type AnimeGenre struct {
 }
 
 type Episode struct {
-	ID                 uuid.UUID        `json:"id" validate:"required,uuid"`
-	Title              *string          `json:"title" validate:"omitempty"`
-	PlayerURL          *string          `json:"player_url" validate:"omitempty"`
-	PageURL            *string          `json:"page_url" validate:"omitempty"`
-	PostedBy           *string          `json:"posted_by" validate:"omitempty"`
-	PreviousEpisodeURL *string          `json:"previous_episode_url" validate:"omitempty"`
-	NextEpisodeURL     *string          `json:"next_episode_url" validate:"omitempty"`
-	SeeAllEpisodesURL  *string          `json:"see_all_episodes_url" validate:"omitempty"`
-	ReleaseDate        *string          `json:"release_date" validate:"omitempty"`
-	ReleaseTime        *string          `json:"release_time" validate:"omitempty"`
-	EpisodeNumber      *string          `json:"episode_number" validate:"omitempty"`
-	ListEpisode        *[]ListOfEpisode `json:"list_episode" validate:"omitempty"`
-	DownloadLinks      *[]DownloadLink  `json:"download_links" validate:"omitempty"`
+	ID                 uuid.UUID           `json:"id" validate:"required,uuid"`
+	Title              *string             `json:"title" validate:"omitempty"`
+	PlayerURL          *string             `json:"player_url" validate:"omitempty"`
+	PageURL            *string             `json:"page_url" validate:"omitempty"`
+	PostedBy           *string             `json:"posted_by" validate:"omitempty"`
+	PreviousEpisodeURL *string             `json:"previous_episode_url" validate:"omitempty"`
+	NextEpisodeURL     *string             `json:"next_episode_url" validate:"omitempty"`
+	SeeAllEpisodesURL  *string             `json:"see_all_episodes_url" validate:"omitempty"`
+	ReleaseDate        *string             `json:"release_date" validate:"omitempty"`
+	ReleaseTime        *string             `json:"release_time" validate:"omitempty"`
+	EpisodeNumber      *string             `json:"episode_number" validate:"omitempty"`
+	ListEpisode        *[]ListOfEpisode    `json:"list_episode" validate:"omitempty"`
+	DownloadLinks      *[]DownloadLink     `json:"download_links" validate:"omitempty"`
+	Pagination         *[]PlayerPagination `json:"pagination" validate:"omitempty"`
 }
 
 type ListOfEpisode struct {
@@ -55,9 +58,9 @@ type DownloadLink struct {
 	Quality *string `json:"quality" validate:"omitempty"`
 	Format  *string `json:"format" validate:"omitempty"`
 }
-
 type PaginationAnime struct {
 	TotalPages      int     `json:"total_pages"`
+	TotalItems      int64   `json:"total_items"`
 	CurrentPage     int     `json:"current_page"`
 	HasNext         bool    `json:"has_next"`
 	HasPrevious     bool    `json:"has_previous"`
